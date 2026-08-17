@@ -14,74 +14,96 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
   const [interimTranscript, setInterimTranscript] = useState('')
   const [isSupported, setIsSupported] = useState(false)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const isListeningRef = useRef(false)
+  const onResultRef = useRef(options.onResult)
+  const onErrorRef = useRef(options.onError)
 
   const {
     language = 'en-IN',
     continuous = true,
     interimResults = true,
-    onResult,
-    onError,
   } = options
 
+  // Keep callback refs current without re-creating recognition
+  useEffect(() => {
+    onResultRef.current = options.onResult
+  }, [options.onResult])
+
+  useEffect(() => {
+    onErrorRef.current = options.onError
+  }, [options.onError])
+
+  // Sync ref with state
+  useEffect(() => {
+    isListeningRef.current = isListening
+  }, [isListening])
+
+  // Initialize recognition once
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
     setIsSupported(!!SpeechRecognition)
 
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition()
-      recognition.lang = language
-      recognition.continuous = continuous
-      recognition.interimResults = interimResults
-      recognition.maxAlternatives = 1
+    if (!SpeechRecognition) return
 
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        let interim = ''
-        let final = ''
+    const recognition = new SpeechRecognition()
+    recognition.lang = language
+    recognition.continuous = continuous
+    recognition.interimResults = interimResults
+    recognition.maxAlternatives = 1
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i]
-          if (result.isFinal) {
-            final += result[0].transcript
-            setTranscript(prev => prev + ' ' + final)
-            onResult?.(final.trim(), true)
-          } else {
-            interim += result[0].transcript
-          }
-        }
-        setInterimTranscript(interim)
-      }
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = ''
+      let final = ''
 
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        console.error('Speech recognition error:', event.error)
-        onError?.(event.error)
-        if (event.error !== 'no-speech') {
-          setIsListening(false)
-        }
-      }
-
-      recognition.onend = () => {
-        // Auto-restart if still supposed to be listening
-        if (isListening && continuous) {
-          try {
-            recognition.start()
-          } catch {
-            setIsListening(false)
-          }
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i]
+        if (result.isFinal) {
+          final += result[0].transcript
+          setTranscript(prev => prev + ' ' + final)
+          onResultRef.current?.(final.trim(), true)
         } else {
-          setIsListening(false)
+          interim += result[0].transcript
         }
       }
-
-      recognitionRef.current = recognition
+      setInterimTranscript(interim)
     }
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error('Speech recognition error:', event.error)
+      onErrorRef.current?.(event.error)
+
+      // Don't stop for transient errors
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        setIsListening(false)
+      }
+    }
+
+    recognition.onend = () => {
+      // Auto-restart if still supposed to be listening (continuous mode)
+      if (isListeningRef.current && continuous) {
+        try {
+          recognition.start()
+        } catch {
+          // Might fail if already started — ignore
+        }
+      } else {
+        setIsListening(false)
+      }
+    }
+
+    recognitionRef.current = recognition
 
     return () => {
-      recognitionRef.current?.stop()
+      try {
+        recognition.stop()
+      } catch {
+        // Ignore errors on cleanup
+      }
     }
-  }, [language, continuous, interimResults, onResult, onError, isListening])
+  }, [language, continuous, interimResults])
 
   const startListening = useCallback(() => {
-    if (recognitionRef.current && !isListening) {
+    if (recognitionRef.current && !isListeningRef.current) {
       setTranscript('')
       setInterimTranscript('')
       try {
@@ -91,14 +113,18 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
         console.error('Failed to start recognition:', error)
       }
     }
-  }, [isListening])
+  }, [])
 
   const stopListening = useCallback(() => {
-    if (recognitionRef.current && isListening) {
-      recognitionRef.current.stop()
+    if (recognitionRef.current && isListeningRef.current) {
+      try {
+        recognitionRef.current.stop()
+      } catch {
+        // Ignore
+      }
       setIsListening(false)
     }
-  }, [isListening])
+  }, [])
 
   const resetTranscript = useCallback(() => {
     setTranscript('')
