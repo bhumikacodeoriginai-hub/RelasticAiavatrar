@@ -33,6 +33,8 @@ from api.conversation import router as conversation_router
 from api.employee import router as employee_router
 from api.websocket import router as websocket_router
 from api.dashboard import router as dashboard_router
+from api.auth import router as auth_router
+from api.visits import router as visits_router, departure_detector
 
 # Configure structured logging
 structlog.configure(
@@ -186,10 +188,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"   📍 API Docs at http://localhost:{settings.app_port}/docs")
     logger.info("=" * 60)
 
+    # Start background services
+    await departure_detector.start(app)
+
     yield  # Application runs here
 
     # Shutdown
     logger.info("🛑 Shutting down AI Avatar Receptionist Backend...")
+    await departure_detector.stop()
     if hasattr(app.state, 'camera_service') and app.state.camera_service.is_running:
         await app.state.camera_service.stop()
     await close_db()
@@ -224,9 +230,11 @@ app.add_middleware(
 )
 
 # Register API Routers
+app.include_router(auth_router)
 app.include_router(visitor_router)
 app.include_router(conversation_router)
 app.include_router(employee_router)
+app.include_router(visits_router)
 app.include_router(websocket_router)
 app.include_router(dashboard_router)
 
