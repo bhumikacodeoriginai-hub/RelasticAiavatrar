@@ -1,67 +1,81 @@
+# ============================
+# AI Avatar Receptionist
+# ============================
+
+# Environment & Secrets
+.env
+.env.local
+.env.production
+!.env.example
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+venv/
+.venv/
+env/
 *.egg-info/
 dist/
 build/
 .eggs/
-*.egg
 
-# Virtual environments
-venv/
-.venv/
-env/
+# AI/ML Models (large files)
+*.onnx
+*.pt
+*.pth
+*.bin
+*.h5
+*.tflite
+models/
+!models/.gitkeep
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+*.js.map
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
+*~
+.DS_Store
 
-# Environment variables
-.env
-!.env.example
-
-# Models (large files)
-models/*.onnx
-models/*.pt
-models/*.pth
-models/*.bin
+# Docker
+docker-data/
 
 # Database
 *.db
 *.sqlite3
+mysql_data/
 
 # Logs
-logs/
 *.log
+logs/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Node.js
-node_modules/
-.next/
-out/
-
-# Docker
-.docker/
-
-# Uploads and temporary files
+# Uploads & Temp
 uploads/
 temp/
 tmp/
+*.tmp
 
-# Coverage reports
+# Cache
+.cache/
+face_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Assets (generated)
-assets/generated/
-
-# Face embeddings cache
-face_cache/
+# OS
+Thumbs.db
+.DS_Store
