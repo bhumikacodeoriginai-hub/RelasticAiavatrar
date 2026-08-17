@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import Avatar from '../components/Avatar'
+import Avatar3D from '../components/Avatar3D'
 import CameraFeed from '../components/CameraFeed'
 import ConversationPanel from '../components/ConversationPanel'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -11,6 +11,12 @@ interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: string
+}
+
+interface SpeechMark {
+  time: number
+  type: string
+  value: string
 }
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
@@ -27,6 +33,8 @@ function ReceptionistPage() {
   const [faceDetected, setFaceDetected] = useState(false)
   const [recognitionStatus, setRecognitionStatus] = useState<string | null>(null)
   const [showConsentButtons, setShowConsentButtons] = useState(false)
+  const [speechMarks, setSpeechMarks] = useState<SpeechMark[]>([])
+  const [audioStartTime, setAudioStartTime] = useState<number>(0)
   const audioRef = useRef<HTMLAudioElement>(null)
   const clientId = useRef(`client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`).current
 
@@ -150,6 +158,14 @@ function ReceptionistPage() {
         audioRef.current.currentTime = 0
       }
 
+      // Store speech marks for lip sync
+      const marks = data.speech_marks as SpeechMark[] | null
+      if (marks && marks.length > 0) {
+        setSpeechMarks(marks)
+      } else {
+        setSpeechMarks([])
+      }
+
       setIsSpeaking(true)
       setAvatarState('speaking')
       const audioBlob = new Blob(
@@ -158,7 +174,10 @@ function ReceptionistPage() {
       )
       const audioUrl = URL.createObjectURL(audioBlob)
       audioRef.current.src = audioUrl
-      audioRef.current.play().catch(err => {
+      audioRef.current.play().then(() => {
+        // Record start time for viseme synchronization
+        setAudioStartTime(Date.now())
+      }).catch(err => {
         console.error('Audio playback error:', err)
         setIsSpeaking(false)
         setAvatarState('listening')
@@ -258,6 +277,7 @@ function ReceptionistPage() {
   const handleAudioEnded = () => {
     setIsSpeaking(false)
     setAvatarState('listening')
+    setSpeechMarks([])
     if (isSupported && !isListening && sessionId) {
       startListening()
     }
@@ -272,10 +292,12 @@ function ReceptionistPage() {
         <div className="lg:col-span-5 flex flex-col gap-4">
           {/* Avatar */}
           <div className="glass-panel p-6 flex-1 flex flex-col items-center justify-center">
-            <Avatar
+            <Avatar3D
               isSpeaking={isSpeaking}
               isListening={isListening}
               state={avatarState}
+              speechMarks={speechMarks}
+              audioStartTime={audioStartTime}
               name={visitorName || undefined}
             />
 
