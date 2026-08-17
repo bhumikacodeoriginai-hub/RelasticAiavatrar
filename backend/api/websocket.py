@@ -66,6 +66,8 @@ class ConnectionManager:
                 self.disconnect(client_id)
 
     async def broadcast_to_dashboards(self, message: dict) -> None:
+        """Broadcast to local dashboard connections AND publish to Redis for other instances."""
+        # Local broadcast
         disconnected = set()
         for ws in self.dashboard_connections:
             try:
@@ -74,6 +76,10 @@ class ConnectionManager:
                 disconnected.add(ws)
         for ws in disconnected:
             self.dashboard_connections.discard(ws)
+
+        # Publish to Redis for other backend instances
+        from services.redis_manager import redis_manager
+        await redis_manager.publish("ws:dashboard_broadcast", message)
 
 
 # Global connection manager

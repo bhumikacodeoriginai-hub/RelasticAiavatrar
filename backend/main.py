@@ -80,6 +80,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("❌ Database initialization failed", error=str(e))
 
+    # Initialize Redis
+    try:
+        from services.redis_manager import redis_manager
+        await redis_manager.initialize()
+        app.state.redis = redis_manager
+        logger.info("✅ Redis initialized")
+    except Exception as e:
+        logger.error("⚠️ Redis initialization failed (degraded mode)", error=str(e))
+
     # Initialize AWS Bedrock Client
     try:
         bedrock_client = BedrockClient()
@@ -94,6 +103,15 @@ async def lifespan(app: FastAPI):
     conv_manager = ConversationManager(app.state.bedrock_client)
     app.state.conversation_manager = conv_manager
     logger.info("✅ Conversation manager initialized")
+
+    # Initialize Knowledge Base (RAG)
+    try:
+        from ai.knowledge_base import knowledge_base
+        await knowledge_base.initialize()
+        app.state.knowledge_base = knowledge_base
+        logger.info("✅ Knowledge base loaded", entries=knowledge_base.entry_count)
+    except Exception as e:
+        logger.warning("⚠️ Knowledge base failed to load (non-critical)", error=str(e))
 
     # Initialize Text-to-Speech
     try:
@@ -204,6 +222,9 @@ async def lifespan(app: FastAPI):
     await departure_detector.stop()
     if hasattr(app.state, 'camera_service') and app.state.camera_service.is_running:
         await app.state.camera_service.stop()
+    # Close Redis
+    if hasattr(app.state, 'redis'):
+        await app.state.redis.close()
     await close_db()
     logger.info("👋 Shutdown complete")
 

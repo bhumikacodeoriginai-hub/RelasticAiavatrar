@@ -12,7 +12,8 @@ websockets==12.0
 sqlalchemy==2.0.23
 aiomysql==0.2.0
 pymysql==1.1.0
-redis==5.0.1
+alembic==1.13.0
+redis[hiredis]==5.0.1
 
 # AWS Services
 boto3==1.34.0

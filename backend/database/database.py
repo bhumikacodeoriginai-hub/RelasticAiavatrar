@@ -51,11 +51,32 @@ async def get_db():
 
 
 async def init_db():
-    """Initialize database tables."""
-    async with engine.begin() as conn:
-        # Create all tables from ORM models
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables initialized successfully")
+    """
+    Initialize database.
+    In production: Alembic handles migrations (run 'alembic upgrade head' before starting).
+    In development: Falls back to create_all() for convenience, but logs a warning.
+    """
+    from config import settings
+
+    if settings.app_env == "development":
+        # Development convenience: auto-create tables
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables initialized (development mode - create_all)")
+        logger.warning(
+            "⚠️  Using create_all() for development. "
+            "In production, run 'alembic upgrade head' before starting the application."
+        )
+    else:
+        # Production: verify connection only. Migrations must be run separately.
+        try:
+            async with engine.begin() as conn:
+                from sqlalchemy import text
+                await conn.execute(text("SELECT 1"))
+            logger.info("Database connection verified (production mode - Alembic migrations expected)")
+        except Exception as e:
+            logger.error("Database connection failed", error=str(e))
+            raise
 
 
 async def close_db():

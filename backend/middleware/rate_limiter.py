@@ -107,9 +107,20 @@ class SlidingWindowCounter:
             return len([ts for ts in self._requests.get(key, []) if ts > window_start])
 
 
-# Global rate limiter instances
+# Global rate limiter instances (in-memory fallback)
 _api_limiter = SlidingWindowCounter()
 _login_limiter = SlidingWindowCounter()
+
+
+async def _check_rate_limit(key: str, max_requests: int, window_seconds: int) -> Tuple[bool, int, int]:
+    """
+    Check rate limit — tries Redis first, falls back to in-memory.
+    """
+    from services.redis_manager import redis_manager
+    if redis_manager.is_available:
+        return await redis_manager.rate_limit_check(key, max_requests, window_seconds)
+    # Fallback to in-memory
+    return _api_limiter.is_rate_limited(key, max_requests, window_seconds)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -118,6 +129,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     1. Login endpoint: Strict limit (login_max_attempts per lockout window)
     2. General API: Broader limit (api_rate_limit_per_minute)
     
+    Uses Redis when available, falls back to in-memory.
     Exempt paths: /health, /docs, /redoc, /openapi.json, static assets
     """
 
@@ -135,9 +147,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # === Login-specific rate limiting (stricter) ===
         if path == "/api/auth/login" and request.method == "POST":
-            is_limited, remaining, reset_time = _login_limiter.is_rate_limited(
-                key=f"login:{client_ip}",
-                max_requests=settings.login_max_attempts * 2,  # Allow some above account lockout
+            is_limited, remaining, reset_time = await _check_rate_limit(
+                key=f"ratelimit:login:{client_ip}",
+                max_requests=settings.login_max_attempts * 2,
                 window_seconds=settings.login_lockout_seconds,
             )
 
@@ -163,8 +175,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 )
 
         # === General API rate limiting ===
-        is_limited, remaining, reset_time = _api_limiter.is_rate_limited(
-            key=f"api:{client_ip}",
+        is_limited, remaining, reset_time = await _check_rate_limit(
+            key=f"ratelimit:api:{client_ip}",
             max_requests=settings.api_rate_limit_per_minute,
             window_seconds=60,
         )

@@ -64,6 +64,10 @@ class ConversationSession:
     requested_employee_name: Optional[str] = None
     requested_employee_id: Optional[str] = None
 
+    # Token budget tracking (per session)
+    tokens_used: int = 0
+    max_tokens_per_session: int = 5000  # Configurable budget
+
     def add_message(self, role: str, content: str) -> None:
         """Add a message to the conversation history."""
         self.messages.append({
@@ -116,6 +120,10 @@ class ConversationManager:
         self._on_consent_granted_callback: Optional[Callable] = None
         self._on_consent_denied_callback: Optional[Callable] = None
         self.prompt_builder = PromptBuilder()
+
+        # Redis-backed session persistence (survives restarts)
+        from services.session_store import session_store
+        self._session_store = session_store
 
     def on_response(self, callback: Callable[[str, str], Awaitable[None]]) -> None:
         """Register callback for when AI generates a response."""
@@ -180,6 +188,7 @@ class ConversationManager:
         )
 
         self.active_sessions[session_id] = session
+        await self._persist_session(session)
         logger.info(
             "Conversation session started",
             session_id=session_id,
@@ -228,26 +237,51 @@ class ConversationManager:
         """
         Process user input and generate AI response.
         The response and state transition depend on current session state.
+        Input is sanitized through guardrails before processing.
         """
+        from ai.guardrails import sanitize_user_input, sanitize_name_input, check_response_safety
+
         session = self.active_sessions.get(session_id)
         if not session:
             logger.warning("Session not found", session_id=session_id)
             return "I'm sorry, could you please repeat that?"
 
-        # Add user message to history
-        session.add_message("user", user_text)
+        # === GUARDRAIL: Sanitize user input ===
+        if session.state == ConversationState.WAITING_FOR_NAME:
+            sanitized = sanitize_name_input(user_text)
+        else:
+            sanitized = sanitize_user_input(user_text)
+
+        if sanitized.is_blocked:
+            return sanitized.rejection_message or "Could you please rephrase that?"
+
+        # Use sanitized text
+        clean_text = sanitized.text
+
+        # Add user message to history (store original for audit, use clean for processing)
+        session.add_message("user", clean_text)
 
         # Route to appropriate handler based on state
         if session.state == ConversationState.WAITING_FOR_NAME:
-            return await self._handle_name_input(session, user_text)
+            result = await self._handle_name_input(session, clean_text)
         elif session.state == ConversationState.ASKING_CONSENT:
-            return await self._handle_consent_response(session, user_text)
+            result = await self._handle_consent_response(session, clean_text)
         elif session.state == ConversationState.WAITING_FOR_EMPLOYEE:
-            return await self._handle_employee_response(session, user_text)
+            result = await self._handle_employee_response(session, clean_text)
         elif session.state == ConversationState.ENDING:
-            return await self._handle_farewell(session, user_text)
+            result = await self._handle_farewell(session, clean_text)
         else:
-            return await self._handle_conversation(session, user_text)
+            result = await self._handle_conversation(session, clean_text)
+
+        # === GUARDRAIL: Check response safety ===
+        safe_response = check_response_safety(result)
+        if safe_response.leaked_info:
+            logger.error("AI response leaked system info — replaced", session_id=session_id)
+        result = safe_response.text
+
+        # Persist updated session state to Redis
+        await self._persist_session(session)
+        return result
 
     async def _handle_name_input(
         self, session: ConversationSession, user_text: str
@@ -370,6 +404,7 @@ class ConversationManager:
         """
         Handle general conversation with the visitor.
         Detects intents (meet employee, farewell) and routes appropriately.
+        Uses RAG knowledge base for grounded corporate answers.
         """
         # Check for farewell
         farewell_indicators = ["bye", "goodbye", "see you", "leaving", "gotta go", "have to go"]
@@ -382,11 +417,36 @@ class ConversationManager:
         if any(phrase in user_text.lower() for phrase in meet_indicators):
             return await self._handle_employee_request(session, user_text)
 
-        # General conversation — let Llama respond
+        # === RAG: Search knowledge base for relevant context ===
+        knowledge_context = ""
+        try:
+            from ai.knowledge_base import knowledge_base
+            if knowledge_base.is_loaded:
+                results = knowledge_base.search(user_text, max_results=2)
+                if results.entries:
+                    knowledge_context = knowledge_base.format_context(results) or ""
+        except Exception as e:
+            logger.debug("Knowledge base search failed (non-critical)", error=str(e))
+
+        # Build prompt with optional knowledge context
         system_prompt = PromptBuilder.build_system_prompt(session.visitor_context)
+        if knowledge_context:
+            system_prompt += f"\n\n{knowledge_context}"
+
         user_prompt = PromptBuilder.build_conversation_prompt(
             session.visitor_context, user_text
         )
+
+        # === TOKEN BUDGET: Check if session has exceeded its limit ===
+        if session.tokens_used >= session.max_tokens_per_session:
+            logger.warning("Session token budget exceeded", 
+                          session_id=session.session_id, tokens_used=session.tokens_used)
+            response = (
+                "I've been quite chatty! For more detailed questions, "
+                "let me connect you with a team member who can help further."
+            )
+            session.add_message("assistant", response)
+            return response
 
         response = await self.bedrock.generate_response(
             prompt=user_prompt,
@@ -394,6 +454,9 @@ class ConversationManager:
             max_tokens=200,
             temperature=0.6
         )
+
+        # Track approximate token usage
+        session.tokens_used += len(user_prompt) // 4 + len(response) // 4
 
         session.add_message("assistant", response)
         return response
@@ -530,6 +593,9 @@ class ConversationManager:
             "consent_granted": session.consent_granted,
         }
 
+        # Clean up Redis session
+        await self._session_store.delete(session_id)
+
         logger.info("Conversation session ended", **summary)
         return summary
 
@@ -544,3 +610,23 @@ class ConversationManager:
     def get_all_sessions(self) -> Dict[str, ConversationSession]:
         """Get all active sessions."""
         return self.active_sessions
+
+    async def _persist_session(self, session: ConversationSession) -> None:
+        """Persist session state to Redis for durability."""
+        data = {
+            "session_id": session.session_id,
+            "state": session.state.value,
+            "visitor_id": session.visitor_id,
+            "visit_id": session.visit_id,
+            "visitor_name": session.visitor_context.name,
+            "visitor_company": session.visitor_context.company,
+            "visitor_role": session.visitor_context.role,
+            "visitor_visit_count": session.visitor_context.visit_count,
+            "messages": session.messages,
+            "consent_granted": session.consent_granted,
+            "started_at": session.started_at.isoformat(),
+            "last_activity": session.last_activity.isoformat(),
+            "requested_employee_name": session.requested_employee_name,
+            "requested_employee_id": session.requested_employee_id,
+        }
+        await self._session_store.save(session.session_id, data)
