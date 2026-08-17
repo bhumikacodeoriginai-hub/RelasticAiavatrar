@@ -1,6 +1,7 @@
 """
 Visitor API endpoints.
 Handles visitor registration, lookup, consent management, and visit tracking.
+All endpoints require authentication.
 """
 
 from typing import Optional, List
@@ -14,6 +15,7 @@ import structlog
 from database.database import get_db
 from database.repositories import VisitorRepository, VisitRepository
 from database.models import ConsentStatus
+from api.auth import require_receptionist_or_above, require_viewer_or_above, require_manager_or_above
 
 logger = structlog.get_logger()
 
@@ -88,7 +90,8 @@ class VisitorStats(BaseModel):
 @router.post("/register", response_model=VisitorResponse)
 async def register_visitor(
     visitor: VisitorCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """
     Register a new visitor.
@@ -145,7 +148,8 @@ async def register_visitor(
 async def list_visitors(
     limit: int = 50,
     offset: int = 0,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_viewer_or_above),
 ):
     """List all registered visitors with pagination."""
     repo = VisitorRepository(db)
@@ -170,7 +174,7 @@ async def list_visitors(
 
 
 @router.get("/stats", response_model=VisitorStats)
-async def get_stats(db: AsyncSession = Depends(get_db)):
+async def get_stats(db: AsyncSession = Depends(get_db), _user: dict = Depends(require_viewer_or_above)):
     """Get visitor statistics for the dashboard."""
     repo = VisitorRepository(db)
     stats = await repo.get_stats()
@@ -180,7 +184,8 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 @router.get("/{visitor_id}", response_model=VisitorResponse)
 async def get_visitor(
     visitor_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_viewer_or_above),
 ):
     """Get a specific visitor by ID."""
     repo = VisitorRepository(db)
@@ -208,7 +213,8 @@ async def get_visitor(
 async def update_consent(
     visitor_id: str,
     consent: ConsentUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """
     Update visitor consent status.
@@ -233,7 +239,8 @@ async def update_consent(
 @router.delete("/{visitor_id}")
 async def delete_visitor(
     visitor_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_manager_or_above),
 ):
     """
     Delete a visitor and all associated data.
@@ -252,7 +259,8 @@ async def delete_visitor(
 @router.post("/visits", response_model=VisitResponse)
 async def create_visit(
     visit: VisitCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """Create a new visit record."""
     visit_repo = VisitRepository(db)
@@ -278,7 +286,8 @@ async def create_visit(
 @router.put("/visits/{visit_id}/end")
 async def end_visit(
     visit_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """Mark a visit as ended/departed."""
     visit_repo = VisitRepository(db)
@@ -288,7 +297,7 @@ async def end_visit(
 
 
 @router.get("/visits/active", response_model=List[VisitResponse])
-async def get_active_visits(db: AsyncSession = Depends(get_db)):
+async def get_active_visits(db: AsyncSession = Depends(get_db), _user: dict = Depends(require_viewer_or_above)):
     """Get all currently active visits."""
     visit_repo = VisitRepository(db)
     visits = await visit_repo.get_active_visits()

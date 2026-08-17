@@ -1,10 +1,15 @@
 """
 Application configuration using Pydantic Settings.
 Loads from environment variables and .env file.
+
+SECURITY: No default values for secrets. Application will fail to start
+if required secrets are not provided via environment or .env file.
 """
 
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from typing import Optional
+import os
 
 
 class Settings(BaseSettings):
@@ -14,7 +19,20 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     app_env: str = "development"
-    app_secret_key: str = "change-this-in-production"
+
+    # SECURITY: Secret key MUST be provided via environment.
+    # No default value — app will refuse to start without it.
+    app_secret_key: str = ""
+
+    # Token settings
+    access_token_expire_minutes: int = 480  # 8 hours
+    ws_ticket_expire_seconds: int = 30  # WebSocket tickets expire quickly
+
+    # Rate limiting
+    login_max_attempts: int = 5
+    login_lockout_seconds: int = 300  # 5 minutes
+    api_rate_limit_per_minute: int = 120
+    ws_frame_rate_limit_per_second: int = 5
 
     # AWS Configuration
     aws_region: str = "ap-south-1"
@@ -39,7 +57,7 @@ class Settings(BaseSettings):
     database_host: str = "localhost"
     database_port: int = 3306
     database_user: str = "ai_receptionist"
-    database_password: str = "change-in-production"
+    database_password: str = ""  # MUST be provided via environment
     database_name: str = "ai_receptionist"
 
     # Redis
@@ -82,6 +100,34 @@ class Settings(BaseSettings):
     vad_aggressiveness: int = 2
     vad_silence_timeout_ms: int = 1500
     vad_min_speech_ms: int = 300
+
+    # Security Headers
+    enable_security_headers: bool = True
+    hsts_max_age: int = 31536000  # 1 year
+
+    # Initial admin (only used to seed first user if DB is empty)
+    initial_admin_username: str = "admin"
+    initial_admin_email: str = "admin@codeorigin.ai"
+    # MUST be set via environment — no hardcoded password
+    initial_admin_password: str = ""
+
+    @field_validator("app_secret_key")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        """Ensure secret key is provided and not a known insecure default."""
+        insecure_defaults = [
+            "", "change-this-in-production", "secret", "changeme",
+            "your-secret-key-change-in-production"
+        ]
+        if v.lower().strip() in insecure_defaults:
+            if os.environ.get("APP_ENV", "development") != "development":
+                raise ValueError(
+                    "CRITICAL: APP_SECRET_KEY must be set to a secure random value. "
+                    "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+                )
+            # In development, allow empty but warn
+            return v or "DEV-ONLY-INSECURE-KEY-DO-NOT-USE-IN-PRODUCTION"
+        return v
 
     @property
     def database_url(self) -> str:

@@ -1,10 +1,11 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import Avatar3D from '../components/Avatar3D'
 import CameraFeed from '../components/CameraFeed'
 import ConversationPanel from '../components/ConversationPanel'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import { useCamera } from '../hooks/useCamera'
+import { authApi } from '../lib/api'
 
 interface Message {
   id: string
@@ -35,15 +36,33 @@ function ReceptionistPage() {
   const [showConsentButtons, setShowConsentButtons] = useState(false)
   const [speechMarks, setSpeechMarks] = useState<SpeechMark[]>([])
   const [audioStartTime, setAudioStartTime] = useState<number>(0)
+  const [wsUrl, setWsUrl] = useState<string>('')
   const audioRef = useRef<HTMLAudioElement>(null)
   const clientId = useRef(`client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`).current
 
-  // WebSocket for real-time communication
+  // Get WebSocket ticket on mount (authenticated)
+  useEffect(() => {
+    let cancelled = false
+    async function getTicket() {
+      try {
+        const { ticket } = await authApi.getWsTicket()
+        if (!cancelled) {
+          setWsUrl(`${WS_URL}/ws/conversation/${clientId}?ticket=${ticket}`)
+        }
+      } catch (err) {
+        console.error('Failed to get WS ticket:', err)
+      }
+    }
+    getTicket()
+    return () => { cancelled = true }
+  }, [clientId])
+
+  // WebSocket for real-time communication (connects after ticket is obtained)
   const { isConnected, sendMessage } = useWebSocket(
-    `${WS_URL}/ws/conversation/${clientId}`,
+    wsUrl,
     {
       onMessage: handleWebSocketMessage,
-      autoConnect: true,
+      autoConnect: !!wsUrl, // Only connect when URL with ticket is available
     }
   )
 

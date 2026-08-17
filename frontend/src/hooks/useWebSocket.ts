@@ -29,6 +29,7 @@ export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
   } = options
 
   const connect = useCallback(() => {
+    if (!url) return // Don't connect with empty URL
     try {
       const ws = new WebSocket(url)
 

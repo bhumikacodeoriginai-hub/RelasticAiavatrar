@@ -1,6 +1,7 @@
 """
 Conversation API endpoints.
 Handles real-time conversation between visitors and AI avatar.
+All endpoints require authentication (receptionist or kiosk device).
 """
 
 import base64
@@ -16,6 +17,7 @@ from database.repositories import VisitorRepository
 from ai.conversation_manager import ConversationManager
 from voice.text_to_speech import TextToSpeech
 from vision.face_matching import FaceMatchResult, MatchResult
+from api.auth import require_receptionist_or_above, require_viewer_or_above
 
 logger = structlog.get_logger()
 
@@ -77,7 +79,8 @@ def get_tts(request: Request) -> TextToSpeech:
 async def start_conversation(
     req: StartConversationRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """
     Start a new conversation session.
@@ -142,7 +145,8 @@ async def start_conversation(
 async def send_message(
     req: MessageRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """
     Send a user message (transcribed speech) and get AI response.
@@ -185,7 +189,8 @@ async def send_message(
 @router.post("/end/{session_id}")
 async def end_conversation(
     session_id: str,
-    request: Request
+    request: Request,
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """End an active conversation session."""
     conv_manager = get_conversation_manager(request)
@@ -200,7 +205,8 @@ async def end_conversation(
 @router.get("/session/{session_id}", response_model=SessionInfo)
 async def get_session_info(
     session_id: str,
-    request: Request
+    request: Request,
+    _user: dict = Depends(require_viewer_or_above),
 ):
     """Get information about an active conversation session."""
     conv_manager = get_conversation_manager(request)
@@ -219,7 +225,7 @@ async def get_session_info(
 
 
 @router.get("/active")
-async def get_active_sessions(request: Request):
+async def get_active_sessions(request: Request, _user: dict = Depends(require_viewer_or_above)):
     """Get count of active conversation sessions."""
     conv_manager = get_conversation_manager(request)
     return {

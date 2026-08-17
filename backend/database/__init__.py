@@ -7,9 +7,11 @@ from database.database import Base, get_db, init_db, close_db, AsyncSessionLocal
 from database.models import (
     Visitor, Employee, Visit, Appointment,
     Conversation, ConversationMessage, Notification, AuditLog,
+    User, Role, UserRoleEnum,
     ConsentStatus, VisitStatus, EmployeeAvailability, AppointmentStatus
 )
 from database.repositories import (
     VisitorRepository, EmployeeRepository, VisitRepository,
-    AppointmentRepository, ConversationRepository, NotificationRepository
+    AppointmentRepository, ConversationRepository, NotificationRepository,
+    UserRepository, RoleRepository, AuditLogRepository,
 )

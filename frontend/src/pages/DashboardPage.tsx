@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { apiFetch, authApi } from '../lib/api'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
 
 interface DashboardStats {
@@ -40,24 +40,40 @@ function DashboardPage() {
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
+  const [wsUrl, setWsUrl] = useState<string>('')
 
-  // WebSocket for real-time updates
-  const { isConnected } = useWebSocket(`${WS_URL}/ws/dashboard`, {
+  // Get WebSocket ticket for dashboard
+  useEffect(() => {
+    let cancelled = false
+    async function getTicket() {
+      try {
+        const { ticket } = await authApi.getWsTicket()
+        if (!cancelled) {
+          setWsUrl(`${WS_URL}/ws/dashboard?ticket=${ticket}`)
+        }
+      } catch (err) {
+        console.error('Failed to get dashboard WS ticket:', err)
+      }
+    }
+    getTicket()
+    return () => { cancelled = true }
+  }, [])
+
+  // WebSocket for real-time updates (connects after ticket obtained)
+  const { isConnected } = useWebSocket(wsUrl, {
     onMessage: (data) => {
       if (data.type === 'new_session' || data.type === 'session_ended') {
         fetchStats()
         fetchRecentVisitors()
       }
     },
+    autoConnect: !!wsUrl,
   })
 
   const fetchStats = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/dashboard/stats`)
-      if (res.ok) {
-        const data = await res.json()
-        setStats(data)
-      }
+      const data = await apiFetch<DashboardStats>('/api/dashboard/stats')
+      setStats(data)
     } catch (error) {
       console.error('Failed to fetch stats:', error)
     }
@@ -65,11 +81,8 @@ function DashboardPage() {
 
   const fetchRecentVisitors = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/dashboard/recent-visitors`)
-      if (res.ok) {
-        const data = await res.json()
-        setRecentVisitors(data)
-      }
+      const data = await apiFetch<RecentVisitor[]>('/api/dashboard/recent-visitors')
+      setRecentVisitors(data)
     } catch (error) {
       console.error('Failed to fetch visitors:', error)
     }
@@ -77,11 +90,8 @@ function DashboardPage() {
 
   const fetchSystemStatus = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/dashboard/system-status`)
-      if (res.ok) {
-        const data = await res.json()
-        setSystemStatus(data)
-      }
+      const data = await apiFetch<SystemStatus>('/api/dashboard/system-status')
+      setSystemStatus(data)
     } catch (error) {
       console.error('Failed to fetch system status:', error)
     }

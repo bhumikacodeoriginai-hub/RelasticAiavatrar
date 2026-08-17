@@ -84,6 +84,10 @@ ws_manager = ConnectionManager()
 async def conversation_websocket(websocket: WebSocket, client_id: str):
     """
     Main WebSocket for real-time conversation.
+    
+    AUTHENTICATION: Requires a valid connection ticket as query parameter.
+    Get a ticket from POST /api/auth/ws-ticket (requires JWT auth).
+    Connect as: ws://host/ws/conversation/{client_id}?ticket=<ticket>
 
     Protocol (Client → Server):
         {"type": "speech", "text": "...", "is_final": true}
@@ -102,6 +106,22 @@ async def conversation_websocket(websocket: WebSocket, client_id: str):
         {"type": "error", "code": "...", "message": "..."}
         {"type": "pong"}
     """
+    # === AUTHENTICATION: Validate connection ticket ===
+    ticket = websocket.query_params.get("ticket")
+    if not ticket:
+        await websocket.close(code=4001, reason="Missing connection ticket")
+        return
+
+    from api.auth import verify_ws_ticket
+    ticket_payload = verify_ws_ticket(ticket)
+    if not ticket_payload:
+        await websocket.close(code=4003, reason="Invalid or expired ticket")
+        return
+
+    ws_user_id = ticket_payload.get("sub")
+    ws_role = ticket_payload.get("role")
+    logger.info("WebSocket authenticated", client_id=client_id, user_id=ws_user_id, role=ws_role)
+
     await ws_manager.connect(websocket, client_id)
 
     app = websocket.app
@@ -619,7 +639,24 @@ async def _handle_frame(data: dict, client_id: str, app):
 
 @router.websocket("/ws/dashboard")
 async def dashboard_websocket(websocket: WebSocket):
-    """WebSocket for the management dashboard real-time updates."""
+    """
+    WebSocket for the management dashboard real-time updates.
+    AUTHENTICATION: Requires a valid connection ticket as query parameter.
+    """
+    # === AUTHENTICATION: Validate connection ticket ===
+    ticket = websocket.query_params.get("ticket")
+    if not ticket:
+        await websocket.close(code=4001, reason="Missing connection ticket")
+        return
+
+    from api.auth import verify_ws_ticket
+    ticket_payload = verify_ws_ticket(ticket)
+    if not ticket_payload:
+        await websocket.close(code=4003, reason="Invalid or expired ticket")
+        return
+
+    logger.info("Dashboard WebSocket authenticated", user_id=ticket_payload.get("sub"))
+
     await ws_manager.connect_dashboard(websocket)
 
     try:

@@ -333,3 +333,86 @@ class AuditLog(Base):
         Index("idx_audit_entity", "entity_type", "entity_id"),
         Index("idx_audit_created", "created_at"),
     )
+
+
+
+# ============== Auth Models ==============
+
+class UserRoleEnum(str, enum.Enum):
+    """
+    Enterprise RBAC roles (ordered by privilege level).
+    Principle of least privilege — each role inherits nothing from others.
+    """
+    SUPER_ADMIN = "super_admin"
+    IT_ADMIN = "it_admin"
+    SECURITY_OFFICER = "security_officer"
+    RECEPTION_MANAGER = "reception_manager"
+    RECEPTIONIST = "receptionist"
+    AUDITOR = "auditor"
+    VIEWER = "viewer"
+    KIOSK_DEVICE = "kiosk_device"
+
+
+class Role(Base):
+    """RBAC roles with permission sets."""
+    __tablename__ = "roles"
+
+    role_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    permissions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    users: Mapped[List["User"]] = relationship(back_populates="role")
+
+    __table_args__ = (
+        Index("idx_roles_name", "name"),
+    )
+
+
+class User(Base):
+    """
+    Application users (administrators, managers, devices).
+    Passwords stored with bcrypt hash — NEVER plaintext.
+    """
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("roles.role_id"), nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    role: Mapped["Role"] = relationship(back_populates="users")
+
+    __table_args__ = (
+        Index("idx_users_username", "username"),
+        Index("idx_users_email", "email"),
+        Index("idx_users_role", "role_id"),
+        Index("idx_users_active", "is_active"),
+    )

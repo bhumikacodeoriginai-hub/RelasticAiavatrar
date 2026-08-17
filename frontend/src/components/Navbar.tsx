@@ -1,7 +1,9 @@
 import { Link, useLocation } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 
 function Navbar() {
   const location = useLocation()
+  const { user, role, logout } = useAuth()
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 glass-panel border-t-0 rounded-t-none">
@@ -42,10 +44,21 @@ function Navbar() {
             </Link>
           </div>
 
-          {/* Status */}
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            <span className="text-xs text-gray-400">System Active</span>
+          {/* User & Logout */}
+          <div className="flex items-center gap-4">
+            {user && (
+              <div className="text-right hidden sm:block">
+                <p className="text-xs text-white font-medium">{user.display_name}</p>
+                <p className="text-[10px] text-gray-400 capitalize">{role?.replace('_', ' ')}</p>
+              </div>
+            )}
+            <button
+              onClick={logout}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-white hover:bg-gray-700 transition-all"
+              title="Sign out"
+            >
+              Sign Out
+            </button>
           </div>
         </div>
       </div>

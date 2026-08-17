@@ -609,3 +609,229 @@ class NotificationRepository:
             .where(Notification.notification_id == notification_id)
             .values(is_read=True)
         )
+
+
+
+# ============================================================
+# USER REPOSITORY
+# ============================================================
+
+class UserRepository:
+    """Repository for user authentication operations."""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_by_username(self, username: str):
+        """Get a user by username."""
+        from database.models import User
+        result = await self.db.execute(
+            select(User).where(User.username == username)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_id(self, user_id: str):
+        """Get a user by ID."""
+        from database.models import User
+        result = await self.db.execute(
+            select(User).where(User.user_id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_email(self, email: str):
+        """Get a user by email."""
+        from database.models import User
+        result = await self.db.execute(
+            select(User).where(User.email == email)
+        )
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        username: str,
+        email: str,
+        hashed_password: str,
+        display_name: str,
+        role_id: str,
+    ):
+        """Create a new user."""
+        from database.models import User
+        user = User(
+            user_id=str(uuid.uuid4()),
+            username=username,
+            email=email,
+            hashed_password=hashed_password,
+            display_name=display_name,
+            role_id=role_id,
+        )
+        self.db.add(user)
+        await self.db.flush()
+        return user
+
+    async def update_last_login(self, user_id: str) -> None:
+        """Update last login timestamp."""
+        from database.models import User
+        await self.db.execute(
+            update(User)
+            .where(User.user_id == user_id)
+            .values(last_login=datetime.utcnow(), failed_login_attempts=0, is_locked=False, locked_until=None)
+        )
+
+    async def increment_failed_attempts(self, user_id: str) -> int:
+        """Increment failed login attempts. Returns new count."""
+        from database.models import User
+        user = await self.get_by_id(user_id)
+        if not user:
+            return 0
+        new_count = user.failed_login_attempts + 1
+        values = {"failed_login_attempts": new_count}
+
+        # Lock account if threshold exceeded
+        from config import settings
+        if new_count >= settings.login_max_attempts:
+            values["is_locked"] = True
+            values["locked_until"] = datetime.utcnow() + timedelta(seconds=settings.login_lockout_seconds)
+
+        await self.db.execute(
+            update(User).where(User.user_id == user_id).values(**values)
+        )
+        return new_count
+
+    async def unlock_user(self, user_id: str) -> None:
+        """Manually unlock a user account."""
+        from database.models import User
+        await self.db.execute(
+            update(User)
+            .where(User.user_id == user_id)
+            .values(is_locked=False, locked_until=None, failed_login_attempts=0)
+        )
+
+    async def get_all(self, limit: int = 100, offset: int = 0):
+        """Get all users with pagination."""
+        from database.models import User
+        result = await self.db.execute(
+            select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def deactivate(self, user_id: str) -> None:
+        """Deactivate a user (soft delete)."""
+        from database.models import User
+        await self.db.execute(
+            update(User).where(User.user_id == user_id).values(is_active=False)
+        )
+
+    async def change_password(self, user_id: str, new_hashed_password: str) -> None:
+        """Change user password."""
+        from database.models import User
+        await self.db.execute(
+            update(User)
+            .where(User.user_id == user_id)
+            .values(hashed_password=new_hashed_password, password_changed_at=datetime.utcnow())
+        )
+
+    async def count(self) -> int:
+        """Count total users."""
+        from database.models import User
+        result = await self.db.execute(select(func.count(User.user_id)))
+        return result.scalar_one()
+
+
+# ============================================================
+# ROLE REPOSITORY
+# ============================================================
+
+class RoleRepository:
+    """Repository for role operations."""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_by_name(self, name: str):
+        """Get a role by name."""
+        from database.models import Role
+        result = await self.db.execute(
+            select(Role).where(Role.name == name)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_id(self, role_id: str):
+        """Get a role by ID."""
+        from database.models import Role
+        result = await self.db.execute(
+            select(Role).where(Role.role_id == role_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_all(self):
+        """Get all roles."""
+        from database.models import Role
+        result = await self.db.execute(select(Role).order_by(Role.name))
+        return list(result.scalars().all())
+
+    async def create(self, name: str, display_name: str, description: str = "", permissions: dict = None, is_system: bool = False):
+        """Create a new role."""
+        from database.models import Role
+        role = Role(
+            role_id=str(uuid.uuid4()),
+            name=name,
+            display_name=display_name,
+            description=description,
+            permissions=permissions or {},
+            is_system=is_system,
+        )
+        self.db.add(role)
+        await self.db.flush()
+        return role
+
+
+# ============================================================
+# AUDIT LOG REPOSITORY
+# ============================================================
+
+class AuditLogRepository:
+    """Repository for audit log operations."""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def log(
+        self,
+        action: str,
+        entity_type: str,
+        entity_id: Optional[str] = None,
+        details: Optional[str] = None,
+        performed_by: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> None:
+        """Write an audit log entry."""
+        entry = AuditLog(
+            log_id=str(uuid.uuid4()),
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=details,
+            performed_by=performed_by,
+            ip_address=ip_address,
+        )
+        self.db.add(entry)
+        await self.db.flush()
+
+    async def get_recent(self, limit: int = 100, offset: int = 0):
+        """Get recent audit entries."""
+        result = await self.db.execute(
+            select(AuditLog)
+            .order_by(AuditLog.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def get_by_entity(self, entity_type: str, entity_id: str):
+        """Get audit entries for a specific entity."""
+        result = await self.db.execute(
+            select(AuditLog)
+            .where(and_(AuditLog.entity_type == entity_type, AuditLog.entity_id == entity_id))
+            .order_by(AuditLog.created_at.desc())
+        )
+        return list(result.scalars().all())

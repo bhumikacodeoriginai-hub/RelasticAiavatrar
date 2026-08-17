@@ -1,6 +1,7 @@
 """
 Visit Lifecycle Management API.
 Handles visit check-in, check-out, departure detection, and session termination.
+All endpoints require authentication.
 """
 
 import asyncio
@@ -16,6 +17,7 @@ from database.database import get_db, AsyncSessionLocal
 from database.repositories import VisitRepository, VisitorRepository, ConversationRepository
 from database.models import VisitStatus
 from config import settings
+from api.auth import require_viewer_or_above, require_receptionist_or_above
 
 logger = structlog.get_logger()
 
@@ -47,7 +49,7 @@ class VisitStatsResponse(BaseModel):
 # === Endpoints ===
 
 @router.get("/active", response_model=List[ActiveVisitResponse])
-async def get_active_visits(db: AsyncSession = Depends(get_db)):
+async def get_active_visits(db: AsyncSession = Depends(get_db), _user: dict = Depends(require_viewer_or_above)):
     """Get all currently active visits with visitor details."""
     visit_repo = VisitRepository(db)
     visitor_repo = VisitorRepository(db)
@@ -75,7 +77,8 @@ async def get_active_visits(db: AsyncSession = Depends(get_db)):
 @router.post("/{visit_id}/depart")
 async def mark_departure(
     visit_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """Manually mark a visit as departed."""
     visit_repo = VisitRepository(db)
@@ -86,7 +89,7 @@ async def mark_departure(
 
 
 @router.get("/stats/today", response_model=VisitStatsResponse)
-async def get_today_stats(db: AsyncSession = Depends(get_db)):
+async def get_today_stats(db: AsyncSession = Depends(get_db), _user: dict = Depends(require_viewer_or_above)):
     """Get today's visit statistics including peak hours."""
     from sqlalchemy import select, func, and_, extract
     from database.models import Visit, Visitor

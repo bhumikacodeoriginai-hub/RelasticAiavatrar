@@ -1,6 +1,7 @@
 """
 Dashboard API endpoints.
 Provides management dashboard data and statistics.
+All endpoints require authentication (viewer or above).
 """
 
 from typing import Optional, List
@@ -15,6 +16,7 @@ import structlog
 from database.database import get_db
 from database.models import Visitor, Visit, Employee, Conversation
 from database.repositories import VisitorRepository, VisitRepository, EmployeeRepository
+from api.auth import require_viewer_or_above
 
 logger = structlog.get_logger()
 
@@ -61,7 +63,8 @@ class SystemStatus(BaseModel):
 @router.get("/stats", response_model=DashboardStats)
 async def get_dashboard_stats(
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_viewer_or_above),
 ):
     """Get comprehensive dashboard statistics."""
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -115,7 +118,8 @@ async def get_dashboard_stats(
 @router.get("/recent-visitors", response_model=List[RecentVisitor])
 async def get_recent_visitors(
     limit: int = 10,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_viewer_or_above),
 ):
     """Get recent visitors for the dashboard feed."""
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -145,7 +149,7 @@ async def get_recent_visitors(
 
 
 @router.get("/system-status", response_model=SystemStatus)
-async def get_system_status(request: Request):
+async def get_system_status(request: Request, _user: dict = Depends(require_viewer_or_above)):
     """Get system health status."""
     app = request.app
 

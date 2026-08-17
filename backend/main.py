@@ -71,6 +71,12 @@ async def lifespan(app: FastAPI):
     try:
         await init_db()
         logger.info("✅ Database initialized (MySQL)")
+
+        # Run database seeds (creates roles + initial admin if DB is empty)
+        from database.seed import run_seeds
+        from database.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as seed_session:
+            await run_seeds(seed_session)
     except Exception as e:
         logger.error("❌ Database initialization failed", error=str(e))
 
@@ -225,9 +231,21 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
+
+# Security Headers Middleware
+from middleware.security_headers import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Rate Limiting Middleware
+from middleware.rate_limiter import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
+
+# Audit Logging Middleware (logs state-changing operations)
+from middleware.audit import AuditMiddleware
+app.add_middleware(AuditMiddleware)
 
 # Register API Routers
 app.include_router(auth_router)

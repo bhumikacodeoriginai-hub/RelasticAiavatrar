@@ -1,34 +1,46 @@
 version: '3.8'
 
+# =============================================================================
+# SECURITY: All secrets are loaded from .env file.
+# NEVER commit plaintext passwords in this file.
+# Copy .env.example to .env and set real values before starting.
+# =============================================================================
+
 services:
   # MySQL Database
   mysql:
     image: mysql:8.0
     container_name: ai_receptionist_db
     environment:
-      MYSQL_ROOT_PASSWORD: root_password_change_me
-      MYSQL_DATABASE: ai_receptionist
-      MYSQL_USER: ai_receptionist
-      MYSQL_PASSWORD: change_in_production
-    ports:
-      - "3306:3306"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in .env}
+      MYSQL_DATABASE: ${DATABASE_NAME:-ai_receptionist}
+      MYSQL_USER: ${DATABASE_USER:-ai_receptionist}
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD must be set in .env}
+    # SECURITY: Do NOT expose database port in production.
+    # Uncomment only for local development.
+    # ports:
+    #   - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./backend/database/init.sql:/docker-entrypoint-initdb.d/init.sql
     command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "ai_receptionist", "-pchange_in_production"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 30s
+    networks:
+      - internal
 
-  # Redis for session management and caching
+  # Redis for session management, rate limiting, and pub/sub
   redis:
     image: redis:7-alpine
     container_name: ai_receptionist_redis
-    ports:
-      - "6379:6379"
+    # SECURITY: Do NOT expose Redis port in production.
+    # Uncomment only for local development.
+    # ports:
+    #   - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -36,6 +48,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - internal
 
   # Backend API
   backend:
@@ -48,24 +62,23 @@ services:
     environment:
       - DATABASE_HOST=mysql
       - DATABASE_PORT=3306
-      - DATABASE_USER=ai_receptionist
-      - DATABASE_PASSWORD=change_in_production
-      - DATABASE_NAME=ai_receptionist
+      - DATABASE_USER=${DATABASE_USER:-ai_receptionist}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:?DATABASE_PASSWORD must be set in .env}
+      - DATABASE_NAME=${DATABASE_NAME:-ai_receptionist}
       - REDIS_URL=redis://redis:6379/0
-      - APP_ENV=production
+      - APP_ENV=${APP_ENV:-development}
+      - APP_SECRET_KEY=${APP_SECRET_KEY:?APP_SECRET_KEY must be set in .env}
+      - INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD:-}
     env_file:
       - .env
-    volumes:
-      - ./backend:/app
-      - ./models:/app/models
-      - ./assets:/app/assets
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
-    devices:
-      - /dev/video0:/dev/video0
+    networks:
+      - internal
+      - frontend
 
   # Frontend
   frontend:
@@ -76,14 +89,20 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - VITE_API_URL=http://localhost:8000
-      - VITE_WS_URL=ws://localhost:8000
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+      - VITE_WS_URL=${VITE_WS_URL:-ws://localhost:8000}
     depends_on:
       - backend
+    networks:
+      - frontend
 
 volumes:
   mysql_data:
   redis_data:
+
+networks:
+  internal:
+    # Backend services only — not accessible from outside
+    internal: true
+  frontend:
+    # Backend + Frontend can communicate

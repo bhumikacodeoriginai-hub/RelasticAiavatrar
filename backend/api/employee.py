@@ -1,6 +1,7 @@
 """
 Employee API endpoints.
 Handles employee directory and availability management.
+All endpoints require authentication.
 """
 
 from typing import Optional, List
@@ -12,6 +13,7 @@ import structlog
 
 from database.database import get_db
 from database.repositories import EmployeeRepository, NotificationRepository
+from api.auth import require_viewer_or_above, require_receptionist_or_above, require_manager_or_above
 
 logger = structlog.get_logger()
 
@@ -56,7 +58,8 @@ class AvailabilityUpdate(BaseModel):
 @router.get("/", response_model=List[EmployeeResponse])
 async def list_employees(
     department: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_viewer_or_above),
 ):
     """List all employees, optionally filtered by department."""
     repo = EmployeeRepository(db)
@@ -80,7 +83,8 @@ async def list_employees(
 @router.get("/search/{name}", response_model=List[EmployeeResponse])
 async def search_employee(
     name: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_viewer_or_above),
 ):
     """Search for employees by name (partial match)."""
     repo = EmployeeRepository(db)
@@ -102,7 +106,7 @@ async def search_employee(
 
 
 @router.get("/available/list", response_model=List[EmployeeResponse])
-async def list_available_employees(db: AsyncSession = Depends(get_db)):
+async def list_available_employees(db: AsyncSession = Depends(get_db), _user: dict = Depends(require_viewer_or_above)):
     """List all currently available employees."""
     repo = EmployeeRepository(db)
     employees = await repo.get_available()
@@ -125,7 +129,8 @@ async def list_available_employees(db: AsyncSession = Depends(get_db)):
 @router.get("/{employee_id}", response_model=EmployeeResponse)
 async def get_employee(
     employee_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_viewer_or_above),
 ):
     """Get a specific employee by ID."""
     repo = EmployeeRepository(db)
@@ -149,7 +154,8 @@ async def get_employee(
 @router.post("/", response_model=EmployeeResponse)
 async def create_employee(
     employee: EmployeeCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_manager_or_above),
 ):
     """Create a new employee record."""
     repo = EmployeeRepository(db)
@@ -184,7 +190,8 @@ async def create_employee(
 async def update_availability(
     employee_id: str,
     avail: AvailabilityUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _user: dict = Depends(require_receptionist_or_above),
 ):
     """Update an employee's availability status."""
     repo = EmployeeRepository(db)
