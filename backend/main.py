@@ -35,6 +35,9 @@ from api.websocket import router as websocket_router
 from api.dashboard import router as dashboard_router
 from api.auth import router as auth_router
 from api.visits import router as visits_router, departure_detector
+from api.host_approval import router as host_approval_router
+from api.invitations import router as invitations_router
+from api.badges import router as badges_router
 
 # Configure structured logging
 structlog.configure(
@@ -274,6 +277,9 @@ app.include_router(visitor_router)
 app.include_router(conversation_router)
 app.include_router(employee_router)
 app.include_router(visits_router)
+app.include_router(host_approval_router)
+app.include_router(invitations_router)
+app.include_router(badges_router)
 app.include_router(websocket_router)
 app.include_router(dashboard_router)
 

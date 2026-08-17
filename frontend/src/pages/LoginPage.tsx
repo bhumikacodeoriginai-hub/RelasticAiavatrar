@@ -63,7 +63,7 @@ export default function LoginPage() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} className="space-y-5" aria-label="Sign in form">
             <div>
               <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-1.5">
                 Username

@@ -48,7 +48,7 @@ function ConversationPanel({
   }
 
   return (
-    <div className="glass-panel flex flex-col h-full">
+    <div className="glass-panel flex flex-col h-full" role="log" aria-label="Conversation history" aria-live="polite">
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
         <div>

@@ -1,11 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import Avatar3D from '../components/Avatar3D'
+import AvatarAdapter from '../components/AvatarAdapter'
 import CameraFeed from '../components/CameraFeed'
 import ConversationPanel from '../components/ConversationPanel'
+import TextInputPanel from '../components/TextInputPanel'
+import PrivacyNotice from '../components/PrivacyNotice'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import { useCamera } from '../hooks/useCamera'
-import { authApi } from '../lib/api'
+import { authApi, apiFetch } from '../lib/api'
 
 interface Message {
   id: string
@@ -37,6 +39,8 @@ function ReceptionistPage() {
   const [speechMarks, setSpeechMarks] = useState<SpeechMark[]>([])
   const [audioStartTime, setAudioStartTime] = useState<number>(0)
   const [wsUrl, setWsUrl] = useState<string>('')
+  const [isMuted, setIsMuted] = useState(false)
+  const [captionsEnabled, setCaptionsEnabled] = useState(true)
   const audioRef = useRef<HTMLAudioElement>(null)
   const clientId = useRef(`client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`).current
 
@@ -193,14 +197,25 @@ function ReceptionistPage() {
       )
       const audioUrl = URL.createObjectURL(audioBlob)
       audioRef.current.src = audioUrl
-      audioRef.current.play().then(() => {
-        // Record start time for viseme synchronization
+
+      // Respect mute setting — still animate avatar but don't play audio
+      if (isMuted) {
         setAudioStartTime(Date.now())
-      }).catch(err => {
-        console.error('Audio playback error:', err)
-        setIsSpeaking(false)
-        setAvatarState('listening')
-      })
+        // Auto-end "speaking" after estimated duration (2s per sentence)
+        setTimeout(() => {
+          setIsSpeaking(false)
+          setAvatarState('listening')
+        }, 3000)
+      } else {
+        audioRef.current.play().then(() => {
+          // Record start time for viseme synchronization
+          setAudioStartTime(Date.now())
+        }).catch(err => {
+          console.error('Audio playback error:', err)
+          setIsSpeaking(false)
+          setAvatarState('listening')
+        })
+      }
     } else {
       setAvatarState('listening')
     }
@@ -251,6 +266,68 @@ function ReceptionistPage() {
     })
     setShowConsentButtons(false)
   }, [sendMessage])
+
+  // Handle mute toggle (stop/allow audio playback)
+  const handleMuteToggle = useCallback((muted: boolean) => {
+    setIsMuted(muted)
+    if (muted && audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+      setIsSpeaking(false)
+      setAvatarState('listening')
+    }
+  }, [])
+
+  // Handle text input (keyboard/touch alternative to speech)
+  const handleTextInput = useCallback((text: string) => {
+    if (!sessionId || !isConnected) return
+
+    // Add user message to display
+    const newMessage: Message = {
+      id: `msg_${Date.now()}`,
+      role: 'user',
+      content: text,
+      timestamp: new Date().toISOString(),
+    }
+    setMessages(prev => [...prev, newMessage])
+    setAvatarState('thinking')
+
+    // Send to WebSocket (same as speech)
+    sendMessage({
+      type: 'speech',
+      text: text,
+      is_final: true,
+    })
+  }, [sessionId, isConnected, sendMessage])
+
+  // Handle invitation code submission
+  const handleInvitationCode = useCallback(async (code: string) => {
+    try {
+      const response = await apiFetch<{ valid: boolean; message: string; visitor_name?: string }>(
+        '/api/invitations/validate',
+        { method: 'POST', body: JSON.stringify({ code }) }
+      )
+      const systemMsg: Message = {
+        id: `msg_${Date.now()}`,
+        role: 'system',
+        content: response.message,
+        timestamp: new Date().toISOString(),
+      }
+      setMessages(prev => [...prev, systemMsg])
+
+      if (response.valid && response.visitor_name) {
+        setVisitorName(response.visitor_name)
+      }
+    } catch (err) {
+      const errorMsg: Message = {
+        id: `msg_${Date.now()}`,
+        role: 'system',
+        content: 'Unable to validate code. Please try again or ask for assistance.',
+        timestamp: new Date().toISOString(),
+      }
+      setMessages(prev => [...prev, errorMsg])
+    }
+  }, [])
 
   // Start a new conversation (simulated trigger)
   const startNewSession = useCallback((isReturning: boolean = false) => {
@@ -311,7 +388,7 @@ function ReceptionistPage() {
         <div className="lg:col-span-5 flex flex-col gap-4">
           {/* Avatar */}
           <div className="glass-panel p-6 flex-1 flex flex-col items-center justify-center">
-            <Avatar3D
+            <AvatarAdapter
               isSpeaking={isSpeaking}
               isListening={isListening}
               state={avatarState}
@@ -404,17 +481,38 @@ function ReceptionistPage() {
           />
         </div>
 
-        {/* Right column: Conversation */}
-        <div className="lg:col-span-7 min-h-0">
-          <ConversationPanel
-            messages={messages}
-            isListening={isListening}
-            interimTranscript={interimTranscript}
-            visitorName={visitorName}
-            sessionState={sessionState}
+        {/* Right column: Conversation + Text Input */}
+        <div className="lg:col-span-7 flex flex-col gap-3 min-h-0">
+          <div className="flex-1 min-h-0">
+            <ConversationPanel
+              messages={messages}
+              isListening={isListening}
+              interimTranscript={interimTranscript}
+              visitorName={visitorName}
+              sessionState={sessionState}
+            />
+          </div>
+
+          {/* Accessible text input (keyboard/touch alternative to speech) */}
+          <TextInputPanel
+            onSubmit={handleTextInput}
+            onInvitationCode={handleInvitationCode}
+            isDisabled={!isConnected}
+            sessionActive={!!sessionId}
           />
         </div>
       </div>
+
+      {/* Privacy notice + media controls (always visible on kiosk) */}
+      <PrivacyNotice
+        isCameraActive={cameraActive}
+        isMicActive={isListening}
+        isSpeaking={isSpeaking}
+        isMuted={isMuted}
+        onMuteToggle={handleMuteToggle}
+        captionsEnabled={captionsEnabled}
+        onCaptionsToggle={setCaptionsEnabled}
+      />
     </div>
   )
 }
