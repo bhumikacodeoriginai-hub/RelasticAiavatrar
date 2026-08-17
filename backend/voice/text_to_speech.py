@@ -1,10 +1,11 @@
 """
 Text-to-Speech module using Amazon Polly.
 Converts AI-generated text responses to natural-sounding speech audio.
+All boto3 calls use asyncio.to_thread to avoid blocking the event loop.
 """
 
-import io
 import asyncio
+import json
 from typing import Optional, AsyncGenerator
 import boto3
 import structlog
@@ -18,19 +19,10 @@ class TextToSpeech:
     """
     Amazon Polly Text-to-Speech service.
     Converts text to audio for the AI avatar to speak.
-    Supports SSML for expressive speech.
+    Supports speech marks for lip synchronization (visemes).
     """
 
-    # Available voices for Indian English
-    VOICES = {
-        "aditi": {"id": "Aditi", "gender": "Female", "engine": "standard"},
-        "kajal": {"id": "Kajal", "gender": "Female", "engine": "neural"},
-        "joanna": {"id": "Joanna", "gender": "Female", "engine": "neural"},
-        "matthew": {"id": "Matthew", "gender": "Male", "engine": "neural"},
-    }
-
     def __init__(self):
-        """Initialize the TTS service."""
         self.voice_id = settings.polly_voice_id
         self.engine = settings.polly_engine
         self.language_code = settings.polly_language_code
@@ -41,14 +33,17 @@ class TextToSpeech:
         self.sample_rate = "24000"
 
     async def initialize(self) -> None:
-        """Initialize the Amazon Polly client."""
+        """Initialize the Amazon Polly client (non-blocking)."""
         try:
-            session = boto3.Session(
-                region_name=self.region,
-                aws_access_key_id=settings.aws_access_key_id,
-                aws_secret_access_key=settings.aws_secret_access_key
-            )
-            self.client = session.client("polly")
+            def _create_client():
+                session = boto3.Session(
+                    region_name=self.region,
+                    aws_access_key_id=settings.aws_access_key_id,
+                    aws_secret_access_key=settings.aws_secret_access_key
+                )
+                return session.client("polly")
+
+            self.client = await asyncio.to_thread(_create_client)
             self._initialized = True
             logger.info(
                 "Text-to-Speech initialized",
@@ -62,7 +57,7 @@ class TextToSpeech:
 
     async def synthesize(self, text: str) -> Optional[bytes]:
         """
-        Convert text to speech audio.
+        Convert text to speech audio (non-blocking).
 
         Args:
             text: Text to convert to speech
@@ -78,19 +73,22 @@ class TextToSpeech:
             return None
 
         try:
-            response = self.client.synthesize_speech(
-                Text=text,
-                OutputFormat=self.output_format,
-                VoiceId=self.voice_id,
-                Engine=self.engine,
-                LanguageCode=self.language_code,
-                SampleRate=self.sample_rate
-            )
+            def _synthesize():
+                return self.client.synthesize_speech(
+                    Text=text,
+                    OutputFormat=self.output_format,
+                    VoiceId=self.voice_id,
+                    Engine=self.engine,
+                    LanguageCode=self.language_code,
+                    SampleRate=self.sample_rate
+                )
+
+            response = await asyncio.to_thread(_synthesize)
 
             audio_stream = response.get("AudioStream")
             if audio_stream:
                 audio_bytes = audio_stream.read()
-                logger.info(
+                logger.debug(
                     "Speech synthesized",
                     text_length=len(text),
                     audio_size=len(audio_bytes)
@@ -100,33 +98,30 @@ class TextToSpeech:
             return None
 
         except Exception as e:
-            logger.error("Error synthesizing speech", error=str(e), text=text[:50])
+            logger.error("Error synthesizing speech", error=str(e), text_preview=text[:50])
             return None
 
     async def synthesize_ssml(self, ssml_text: str) -> Optional[bytes]:
         """
-        Convert SSML-formatted text to speech.
-        Allows for more expressive speech with pauses, emphasis, etc.
-
-        Args:
-            ssml_text: SSML-formatted text
-
-        Returns:
-            Audio bytes (MP3 format) or None on error
+        Convert SSML-formatted text to speech (non-blocking).
+        Allows pauses, emphasis, and prosody control.
         """
         if not self._initialized:
             return None
 
         try:
-            response = self.client.synthesize_speech(
-                Text=ssml_text,
-                TextType="ssml",
-                OutputFormat=self.output_format,
-                VoiceId=self.voice_id,
-                Engine=self.engine,
-                LanguageCode=self.language_code,
-                SampleRate=self.sample_rate
-            )
+            def _synthesize_ssml():
+                return self.client.synthesize_speech(
+                    Text=ssml_text,
+                    TextType="ssml",
+                    OutputFormat=self.output_format,
+                    VoiceId=self.voice_id,
+                    Engine=self.engine,
+                    LanguageCode=self.language_code,
+                    SampleRate=self.sample_rate
+                )
+
+            response = await asyncio.to_thread(_synthesize_ssml)
 
             audio_stream = response.get("AudioStream")
             if audio_stream:
@@ -139,29 +134,14 @@ class TextToSpeech:
             return None
 
     def text_to_ssml(self, text: str, speaking_rate: str = "medium") -> str:
-        """
-        Convert plain text to SSML with natural speech patterns.
-
-        Args:
-            text: Plain text
-            speaking_rate: Speed of speech (x-slow, slow, medium, fast, x-fast)
-
-        Returns:
-            SSML-formatted text
-        """
+        """Convert plain text to SSML with natural speech patterns."""
         # Add natural pauses after punctuation
         ssml_text = text.replace(". ", '.<break time="300ms"/> ')
         ssml_text = ssml_text.replace("? ", '?<break time="300ms"/> ')
         ssml_text = ssml_text.replace("! ", '!<break time="200ms"/> ')
         ssml_text = ssml_text.replace(", ", ',<break time="150ms"/> ')
 
-        ssml = f"""<speak>
-    <prosody rate="{speaking_rate}">
-        {ssml_text}
-    </prosody>
-</speak>"""
-
-        return ssml
+        return f"""<speak><prosody rate="{speaking_rate}">{ssml_text}</prosody></speak>"""
 
     async def synthesize_chunks(
         self, text: str, chunk_size: int = 200
@@ -169,15 +149,7 @@ class TextToSpeech:
         """
         Synthesize long text in chunks for faster initial playback.
         Splits text at sentence boundaries.
-
-        Args:
-            text: Full text to synthesize
-            chunk_size: Approximate characters per chunk
-
-        Yields:
-            Audio bytes for each chunk
         """
-        # Split text at sentence boundaries
         sentences = []
         current = ""
 
@@ -190,11 +162,9 @@ class TextToSpeech:
         if current.strip():
             sentences.append(current.strip())
 
-        # If no sentence breaks, just use the full text
         if not sentences:
             sentences = [text]
 
-        # Synthesize each chunk
         for sentence in sentences:
             audio = await self.synthesize(sentence)
             if audio:
@@ -202,35 +172,40 @@ class TextToSpeech:
 
     async def get_speech_marks(self, text: str) -> list:
         """
-        Get speech marks for lip synchronization.
-        Returns timing information for visemes (mouth shapes).
+        Get speech marks for lip synchronization (visemes + word timing).
+        Returns timing information for mouth shapes.
 
         Args:
             text: Text to get speech marks for
 
         Returns:
-            List of speech mark dicts with timing info
+            List of speech mark dicts: {time, type, value, start, end}
         """
         if not self._initialized:
             return []
 
+        if not text or not text.strip():
+            return []
+
         try:
-            response = self.client.synthesize_speech(
-                Text=text,
-                OutputFormat="json",
-                VoiceId=self.voice_id,
-                Engine=self.engine,
-                LanguageCode=self.language_code,
-                SpeechMarkTypes=["viseme", "word"]
-            )
+            def _get_marks():
+                return self.client.synthesize_speech(
+                    Text=text,
+                    OutputFormat="json",
+                    VoiceId=self.voice_id,
+                    Engine=self.engine,
+                    LanguageCode=self.language_code,
+                    SpeechMarkTypes=["viseme", "word"]
+                )
+
+            response = await asyncio.to_thread(_get_marks)
 
             audio_stream = response.get("AudioStream")
             if audio_stream:
                 content = audio_stream.read().decode('utf-8')
                 marks = []
                 for line in content.strip().split('\n'):
-                    if line:
-                        import json
+                    if line.strip():
                         marks.append(json.loads(line))
                 return marks
 

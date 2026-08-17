@@ -1,8 +1,10 @@
 """
 AWS Bedrock client for Llama 3 70B Instruct.
 Handles communication with the AI model for conversation generation.
+All boto3 calls use asyncio.to_thread to avoid blocking the event loop.
 """
 
+import asyncio
 import json
 from typing import Optional, AsyncGenerator
 import boto3
@@ -16,29 +18,30 @@ logger = structlog.get_logger()
 class BedrockClient:
     """
     Client for AWS Bedrock with Meta Llama 3 70B Instruct.
-    Provides both synchronous and streaming response generation.
+    Provides non-blocking response generation.
     """
 
     def __init__(self):
-        """Initialize the Bedrock client."""
         self.model_id = settings.bedrock_model_id
         self.region = settings.aws_region
         self.max_tokens = settings.bedrock_max_tokens
         self.temperature = settings.bedrock_temperature
         self.top_p = settings.bedrock_top_p
-        self.client = None
         self.runtime_client = None
         self._initialized = False
 
     async def initialize(self) -> None:
         """Initialize the Bedrock runtime client."""
         try:
-            session = boto3.Session(
-                region_name=self.region,
-                aws_access_key_id=settings.aws_access_key_id,
-                aws_secret_access_key=settings.aws_secret_access_key
-            )
-            self.runtime_client = session.client("bedrock-runtime")
+            def _create_client():
+                session = boto3.Session(
+                    region_name=self.region,
+                    aws_access_key_id=settings.aws_access_key_id,
+                    aws_secret_access_key=settings.aws_secret_access_key
+                )
+                return session.client("bedrock-runtime")
+
+            self.runtime_client = await asyncio.to_thread(_create_client)
             self._initialized = True
             logger.info(
                 "Bedrock client initialized",
@@ -58,7 +61,7 @@ class BedrockClient:
         top_p: Optional[float] = None
     ) -> str:
         """
-        Generate a response from Llama 3 70B.
+        Generate a response from Llama 3 70B (non-blocking).
 
         Args:
             prompt: User message / conversation input
@@ -73,26 +76,33 @@ class BedrockClient:
         if not self._initialized:
             raise RuntimeError("Bedrock client not initialized")
 
-        # Build the Llama 3 prompt format
         formatted_prompt = self._format_llama_prompt(prompt, system_prompt)
 
         body = json.dumps({
             "prompt": formatted_prompt,
             "max_gen_len": max_tokens or self.max_tokens,
-            "temperature": temperature or self.temperature,
-            "top_p": top_p or self.top_p,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "top_p": top_p if top_p is not None else self.top_p,
         })
 
         try:
-            response = self.runtime_client.invoke_model(
-                modelId=self.model_id,
-                body=body,
-                contentType="application/json",
-                accept="application/json"
-            )
+            # Run blocking boto3 call in thread pool
+            def _invoke():
+                return self.runtime_client.invoke_model(
+                    modelId=self.model_id,
+                    body=body,
+                    contentType="application/json",
+                    accept="application/json"
+                )
 
+            response = await asyncio.to_thread(_invoke)
             response_body = json.loads(response["body"].read())
             generated_text = response_body.get("generation", "")
+
+            # Clean response — remove any trailing special tokens
+            generated_text = generated_text.strip()
+            if "<|eot_id|>" in generated_text:
+                generated_text = generated_text.split("<|eot_id|>")[0].strip()
 
             logger.info(
                 "Bedrock response generated",
@@ -100,7 +110,7 @@ class BedrockClient:
                 response_length=len(generated_text)
             )
 
-            return generated_text.strip()
+            return generated_text
 
         except Exception as e:
             logger.error("Error generating Bedrock response", error=str(e))
@@ -116,15 +126,6 @@ class BedrockClient:
         """
         Generate a streaming response from Llama 3 70B.
         Yields text chunks as they are generated.
-
-        Args:
-            prompt: User message
-            system_prompt: System instruction
-            max_tokens: Maximum tokens
-            temperature: Sampling temperature
-
-        Yields:
-            Text chunks of the response
         """
         if not self._initialized:
             raise RuntimeError("Bedrock client not initialized")
@@ -134,17 +135,20 @@ class BedrockClient:
         body = json.dumps({
             "prompt": formatted_prompt,
             "max_gen_len": max_tokens or self.max_tokens,
-            "temperature": temperature or self.temperature,
+            "temperature": temperature if temperature is not None else self.temperature,
             "top_p": self.top_p,
         })
 
         try:
-            response = self.runtime_client.invoke_model_with_response_stream(
-                modelId=self.model_id,
-                body=body,
-                contentType="application/json",
-                accept="application/json"
-            )
+            def _invoke_stream():
+                return self.runtime_client.invoke_model_with_response_stream(
+                    modelId=self.model_id,
+                    body=body,
+                    contentType="application/json",
+                    accept="application/json"
+                )
+
+            response = await asyncio.to_thread(_invoke_stream)
 
             stream = response.get("body")
             if stream:
@@ -168,7 +172,7 @@ class BedrockClient:
         """
         Format the prompt for Llama 3 Instruct model.
 
-        Llama 3 uses the following format:
+        Llama 3 uses:
         <|begin_of_text|><|start_header_id|>system<|end_header_id|>
         {system_message}<|eot_id|>
         <|start_header_id|>user<|end_header_id|>
@@ -199,7 +203,8 @@ class BedrockClient:
         try:
             response = await self.generate_response(
                 "Say 'OK' in one word.",
-                max_tokens=10
+                max_tokens=10,
+                temperature=0.0
             )
             return len(response) > 0
         except Exception:
