@@ -3,20 +3,17 @@ Visitor API endpoints.
 Handles visitor registration, lookup, consent management, and visit tracking.
 """
 
-import uuid
-import base64
-from datetime import datetime
 from typing import Optional, List
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from database.database import get_db
-from database.visitors import VisitorRepository
-from database.models import Person, Visit
+from database.repositories import VisitorRepository, VisitRepository
+from database.models import ConsentStatus
 
 logger = structlog.get_logger()
 
@@ -38,7 +35,7 @@ class VisitorCreate(BaseModel):
 
 class VisitorResponse(BaseModel):
     """Schema for visitor response."""
-    person_id: str
+    visitor_id: str
     name: str
     email: Optional[str] = None
     phone: Optional[str] = None
@@ -46,6 +43,7 @@ class VisitorResponse(BaseModel):
     role: Optional[str] = None
     consent_status: str
     visit_count: int
+    first_seen: Optional[str] = None
     last_seen: Optional[str] = None
     created_at: str
 
@@ -55,15 +53,15 @@ class VisitorResponse(BaseModel):
 
 class VisitCreate(BaseModel):
     """Schema for creating a new visit."""
-    person_id: str
-    employee_to_meet: Optional[str] = None
+    visitor_id: str
+    employee_id: Optional[str] = None
     purpose: Optional[str] = None
 
 
 class VisitResponse(BaseModel):
     """Schema for visit response."""
     visit_id: str
-    person_id: str
+    visitor_id: str
     arrival_time: str
     departure_time: Optional[str] = None
     purpose: Optional[str] = None
@@ -101,9 +99,21 @@ async def register_visitor(
     # Convert face embedding if provided
     embedding = None
     if visitor.face_embedding:
+        if len(visitor.face_embedding) != 512:
+            raise HTTPException(
+                status_code=400,
+                detail="Face embedding must be exactly 512 dimensions"
+            )
         embedding = np.array(visitor.face_embedding, dtype=np.float32)
 
-    person = await repo.create_person(
+    # Validate consent: never store embedding without explicit consent
+    if embedding is not None and visitor.consent_status != ConsentStatus.GRANTED.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot store face embedding without granted consent"
+        )
+
+    person = await repo.create(
         name=visitor.name,
         face_embedding=embedding,
         email=visitor.email,
@@ -114,11 +124,10 @@ async def register_visitor(
     )
 
     await db.commit()
-
-    logger.info("Visitor registered", person_id=str(person.person_id), name=person.name)
+    logger.info("Visitor registered", visitor_id=person.visitor_id, name=person.name)
 
     return VisitorResponse(
-        person_id=str(person.person_id),
+        visitor_id=person.visitor_id,
         name=person.name,
         email=person.email,
         phone=person.phone,
@@ -126,6 +135,7 @@ async def register_visitor(
         role=person.role,
         consent_status=person.consent_status,
         visit_count=person.visit_count,
+        first_seen=person.first_seen.isoformat() if person.first_seen else None,
         last_seen=person.last_seen.isoformat() if person.last_seen else None,
         created_at=person.created_at.isoformat()
     )
@@ -139,22 +149,23 @@ async def list_visitors(
 ):
     """List all registered visitors with pagination."""
     repo = VisitorRepository(db)
-    persons = await repo.get_all_persons(limit=limit, offset=offset)
+    visitors = await repo.get_all(limit=limit, offset=offset)
 
     return [
         VisitorResponse(
-            person_id=str(p.person_id),
-            name=p.name,
-            email=p.email,
-            phone=p.phone,
-            company=p.company,
-            role=p.role,
-            consent_status=p.consent_status,
-            visit_count=p.visit_count,
-            last_seen=p.last_seen.isoformat() if p.last_seen else None,
-            created_at=p.created_at.isoformat()
+            visitor_id=v.visitor_id,
+            name=v.name,
+            email=v.email,
+            phone=v.phone,
+            company=v.company,
+            role=v.role,
+            consent_status=v.consent_status,
+            visit_count=v.visit_count,
+            first_seen=v.first_seen.isoformat() if v.first_seen else None,
+            last_seen=v.last_seen.isoformat() if v.last_seen else None,
+            created_at=v.created_at.isoformat()
         )
-        for p in persons
+        for v in visitors
     ]
 
 
@@ -162,39 +173,40 @@ async def list_visitors(
 async def get_stats(db: AsyncSession = Depends(get_db)):
     """Get visitor statistics for the dashboard."""
     repo = VisitorRepository(db)
-    stats = await repo.get_visit_stats()
+    stats = await repo.get_stats()
     return VisitorStats(**stats)
 
 
-@router.get("/{person_id}", response_model=VisitorResponse)
+@router.get("/{visitor_id}", response_model=VisitorResponse)
 async def get_visitor(
-    person_id: str,
+    visitor_id: str,
     db: AsyncSession = Depends(get_db)
 ):
     """Get a specific visitor by ID."""
     repo = VisitorRepository(db)
-    person = await repo.get_person_by_id(uuid.UUID(person_id))
+    visitor = await repo.get_by_id(visitor_id)
 
-    if not person:
+    if not visitor:
         raise HTTPException(status_code=404, detail="Visitor not found")
 
     return VisitorResponse(
-        person_id=str(person.person_id),
-        name=person.name,
-        email=person.email,
-        phone=person.phone,
-        company=person.company,
-        role=person.role,
-        consent_status=person.consent_status,
-        visit_count=person.visit_count,
-        last_seen=person.last_seen.isoformat() if person.last_seen else None,
-        created_at=person.created_at.isoformat()
+        visitor_id=visitor.visitor_id,
+        name=visitor.name,
+        email=visitor.email,
+        phone=visitor.phone,
+        company=visitor.company,
+        role=visitor.role,
+        consent_status=visitor.consent_status,
+        visit_count=visitor.visit_count,
+        first_seen=visitor.first_seen.isoformat() if visitor.first_seen else None,
+        last_seen=visitor.last_seen.isoformat() if visitor.last_seen else None,
+        created_at=visitor.created_at.isoformat()
     )
 
 
-@router.put("/{person_id}/consent", response_model=dict)
+@router.put("/{visitor_id}/consent", response_model=dict)
 async def update_consent(
-    person_id: str,
+    visitor_id: str,
     consent: ConsentUpdate,
     db: AsyncSession = Depends(get_db)
 ):
@@ -203,24 +215,24 @@ async def update_consent(
     If revoked, removes face embedding and image data (GDPR compliance).
     """
     repo = VisitorRepository(db)
-    person = await repo.get_person_by_id(uuid.UUID(person_id))
+    visitor = await repo.get_by_id(visitor_id)
 
-    if not person:
+    if not visitor:
         raise HTTPException(status_code=404, detail="Visitor not found")
 
-    if consent.consent_status == "revoked":
-        await repo.revoke_consent(uuid.UUID(person_id))
+    if consent.consent_status == ConsentStatus.REVOKED.value:
+        await repo.revoke_consent(visitor_id)
         await db.commit()
         return {"message": "Consent revoked. Biometric data has been deleted."}
     else:
-        person.consent_status = consent.consent_status
+        await repo.update_consent(visitor_id, consent.consent_status)
         await db.commit()
         return {"message": f"Consent status updated to: {consent.consent_status}"}
 
 
-@router.delete("/{person_id}")
+@router.delete("/{visitor_id}")
 async def delete_visitor(
-    person_id: str,
+    visitor_id: str,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -228,7 +240,7 @@ async def delete_visitor(
     This is a permanent action for privacy/GDPR compliance.
     """
     repo = VisitorRepository(db)
-    success = await repo.delete_person(uuid.UUID(person_id))
+    success = await repo.delete(visitor_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="Visitor not found")
@@ -243,21 +255,19 @@ async def create_visit(
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new visit record."""
-    repo = VisitorRepository(db)
+    visit_repo = VisitRepository(db)
 
-    employee_id = uuid.UUID(visit.employee_to_meet) if visit.employee_to_meet else None
-
-    new_visit = await repo.create_visit(
-        person_id=uuid.UUID(visit.person_id),
-        employee_to_meet=employee_id,
+    new_visit = await visit_repo.create(
+        visitor_id=visit.visitor_id,
+        employee_id=visit.employee_id,
         purpose=visit.purpose
     )
 
     await db.commit()
 
     return VisitResponse(
-        visit_id=str(new_visit.visit_id),
-        person_id=str(new_visit.person_id),
+        visit_id=new_visit.visit_id,
+        visitor_id=new_visit.visitor_id,
         arrival_time=new_visit.arrival_time.isoformat(),
         departure_time=None,
         purpose=new_visit.purpose,
@@ -271,8 +281,8 @@ async def end_visit(
     db: AsyncSession = Depends(get_db)
 ):
     """Mark a visit as ended/departed."""
-    repo = VisitorRepository(db)
-    await repo.end_visit(uuid.UUID(visit_id))
+    visit_repo = VisitRepository(db)
+    await visit_repo.end_visit(visit_id)
     await db.commit()
     return {"message": "Visit ended successfully"}
 
@@ -280,13 +290,13 @@ async def end_visit(
 @router.get("/visits/active", response_model=List[VisitResponse])
 async def get_active_visits(db: AsyncSession = Depends(get_db)):
     """Get all currently active visits."""
-    repo = VisitorRepository(db)
-    visits = await repo.get_active_visits()
+    visit_repo = VisitRepository(db)
+    visits = await visit_repo.get_active_visits()
 
     return [
         VisitResponse(
-            visit_id=str(v.visit_id),
-            person_id=str(v.person_id),
+            visit_id=v.visit_id,
+            visitor_id=v.visitor_id,
             arrival_time=v.arrival_time.isoformat(),
             departure_time=v.departure_time.isoformat() if v.departure_time else None,
             purpose=v.purpose,

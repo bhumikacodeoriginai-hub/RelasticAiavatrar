@@ -5,7 +5,6 @@ Loads from environment variables and .env file.
 
 from pydantic_settings import BaseSettings
 from typing import Optional
-import os
 
 
 class Settings(BaseSettings):
@@ -29,23 +28,31 @@ class Settings(BaseSettings):
     bedrock_top_p: float = 0.9
 
     # AWS Polly
-    polly_voice_id: str = "Aditi"
+    polly_voice_id: str = "Kajal"
     polly_engine: str = "neural"
     polly_language_code: str = "en-IN"
 
     # AWS Transcribe
     transcribe_language_code: str = "en-IN"
 
-    # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_receptionist"
+    # Database (MySQL)
+    database_host: str = "localhost"
+    database_port: int = 3306
+    database_user: str = "ai_receptionist"
+    database_password: str = "change-in-production"
+    database_name: str = "ai_receptionist"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
     # Face Recognition
-    face_similarity_threshold: float = 0.6
+    face_similarity_threshold: float = 0.60
     face_embedding_model: str = "buffalo_l"
     max_faces_per_frame: int = 10
+    min_face_size: int = 80
+    min_detection_confidence: float = 0.5
+    min_face_quality: float = 0.3
+    recognition_cooldown_seconds: float = 7.0
 
     # Camera
     camera_index: int = 0
@@ -53,9 +60,12 @@ class Settings(BaseSettings):
     camera_height: int = 720
     camera_fps: int = 30
 
+    # Person Detection
+    person_detection_confidence: float = 0.5
+    person_debounce_frames: int = 5
+
     # Avatar
     avatar_model_path: str = "./models/avatar"
-    avatar_idle_video: str = "./assets/avatar_idle.mp4"
 
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
@@ -63,6 +73,31 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
     log_format: str = "json"
+
+    # Session
+    session_timeout_seconds: int = 300  # 5 minutes no activity = end session
+    departure_timeout_seconds: int = 30  # 30s no person = consider departed
+
+    # VAD
+    vad_aggressiveness: int = 2
+    vad_silence_timeout_ms: int = 1500
+    vad_min_speech_ms: int = 300
+
+    @property
+    def database_url(self) -> str:
+        """MySQL async connection URL."""
+        return (
+            f"mysql+aiomysql://{self.database_user}:{self.database_password}"
+            f"@{self.database_host}:{self.database_port}/{self.database_name}"
+        )
+
+    @property
+    def database_url_sync(self) -> str:
+        """MySQL sync connection URL (for migrations)."""
+        return (
+            f"mysql+pymysql://{self.database_user}:{self.database_password}"
+            f"@{self.database_host}:{self.database_port}/{self.database_name}"
+        )
 
     @property
     def cors_origins_list(self) -> list[str]:

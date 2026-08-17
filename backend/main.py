@@ -6,18 +6,16 @@ Entry point for the backend server.
 Initializes all services and registers API routes.
 """
 
-import asyncio
 from datetime import datetime
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 import structlog
 
 from config import settings
-from database.database import init_db, close_db
+from database.database import init_db, close_db, check_db_health
 from ai.bedrock import BedrockClient
 from ai.conversation_manager import ConversationManager
 from voice.text_to_speech import TextToSpeech
@@ -70,7 +68,7 @@ async def lifespan(app: FastAPI):
     # Initialize Database
     try:
         await init_db()
-        logger.info("✅ Database initialized")
+        logger.info("✅ Database initialized (MySQL)")
     except Exception as e:
         logger.error("❌ Database initialization failed", error=str(e))
 
@@ -122,14 +120,14 @@ async def lifespan(app: FastAPI):
     # Initialize Vision Services
     try:
         person_detector = PersonDetector(
-            confidence_threshold=0.5,
+            confidence_threshold=settings.person_detection_confidence,
             device="cpu"
         )
         await person_detector.initialize()
 
         face_detector = FaceDetector(
             model_name=settings.face_embedding_model,
-            det_threshold=0.5,
+            det_threshold=settings.min_detection_confidence,
             max_faces=settings.max_faces_per_frame
         )
         await face_detector.initialize()
@@ -146,7 +144,9 @@ async def lifespan(app: FastAPI):
             person_detector=person_detector,
             face_detector=face_detector,
             face_embedder=face_embedder,
-            face_matcher=face_matcher
+            face_matcher=face_matcher,
+            recognition_cooldown=settings.recognition_cooldown_seconds,
+            min_face_size=settings.min_face_size,
         )
         app.state.vision_pipeline = vision_pipeline
         app.state.person_detector = person_detector
@@ -168,7 +168,7 @@ async def lifespan(app: FastAPI):
             fps=settings.camera_fps
         )
         app.state.camera_service = camera
-        logger.info("✅ Camera service created (not started - use /api/camera/start)")
+        logger.info("✅ Camera service created (not started - starts with first frame)")
     except Exception as e:
         logger.error("❌ Camera service creation failed", error=str(e))
 
@@ -193,12 +193,14 @@ app = FastAPI(
     title="AI Avatar Receptionist",
     description="""
     Intelligent AI-powered office receptionist with:
-    - Face detection & recognition
-    - Voice conversation with Llama 3 70B
-    - Realistic avatar with lip sync
+    - Face detection & recognition (InsightFace/ArcFace)
+    - Voice conversation with Llama 3 70B (AWS Bedrock)
+    - Realistic avatar with lip sync (Amazon Polly visemes)
     - Visitor management & registration
+    - Employee directory & availability
+    - Visit tracking & dashboard
     """,
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -228,7 +230,7 @@ async def root():
     """Root endpoint - system info."""
     return {
         "name": "AI Avatar Receptionist",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "company": "Code Origin.AI",
         "status": "running",
         "docs": "/docs"
@@ -237,17 +239,12 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint with service status details."""
     services = {}
 
     # Check database
-    try:
-        from database.database import AsyncSessionLocal
-        async with AsyncSessionLocal() as session:
-            await session.execute("SELECT 1")
-        services["database"] = "healthy"
-    except Exception:
-        services["database"] = "unhealthy"
+    db_healthy = await check_db_health()
+    services["database"] = "healthy" if db_healthy else "unhealthy"
 
     # Check Bedrock
     if hasattr(app.state, 'bedrock_client'):
@@ -261,7 +258,16 @@ async def health_check():
     else:
         services["tts"] = "not_available"
 
-    overall = "healthy" if all(v != "unhealthy" for v in services.values()) else "degraded"
+    # Check Vision
+    services["vision"] = "initialized" if hasattr(app.state, 'vision_pipeline') else "not_available"
+
+    # Check Camera
+    if hasattr(app.state, 'camera_service'):
+        services["camera"] = "running" if app.state.camera_service.is_running else "stopped"
+    else:
+        services["camera"] = "not_available"
+
+    overall = "healthy" if all(v not in ("unhealthy",) for v in services.values()) else "degraded"
 
     return {
         "status": overall,
@@ -272,15 +278,12 @@ async def health_check():
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """Global exception handler."""
+    """Global exception handler - never expose internals in production."""
     logger.error("Unhandled exception", error=str(exc), path=request.url.path)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "message": str(exc) if settings.app_env == "development" else "An error occurred"
-        }
-    )
+    content = {"error": "Internal server error"}
+    if settings.app_env == "development":
+        content["detail"] = str(exc)
+    return JSONResponse(status_code=500, content=content)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,6 @@ Conversation API endpoints.
 Handles real-time conversation between visitors and AI avatar.
 """
 
-import uuid
 import base64
 from typing import Optional, List
 
@@ -13,10 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from database.database import get_db
-from database.visitors import VisitorRepository
-from ai.bedrock import BedrockClient
-from ai.conversation_manager import ConversationManager, ConversationState
-from ai.prompts import VisitorContext, VisitorStatus
+from database.repositories import VisitorRepository
+from ai.conversation_manager import ConversationManager
 from voice.text_to_speech import TextToSpeech
 from vision.face_matching import FaceMatchResult, MatchResult
 
@@ -30,8 +27,8 @@ router = APIRouter(prefix="/api/conversation", tags=["conversation"])
 class StartConversationRequest(BaseModel):
     """Request to start a new conversation."""
     match_status: str = Field(..., description="'match_found' or 'no_match'")
-    person_id: Optional[str] = None
-    person_name: Optional[str] = None
+    visitor_id: Optional[str] = None
+    visitor_name: Optional[str] = None
     visit_count: int = 0
     company: Optional[str] = None
     face_embedding: Optional[List[float]] = None
@@ -62,7 +59,7 @@ class SessionInfo(BaseModel):
     started_at: str
 
 
-# === Dependency to get shared services ===
+# === Dependency helpers ===
 
 def get_conversation_manager(request: Request) -> ConversationManager:
     """Get the conversation manager from app state."""
@@ -90,14 +87,20 @@ async def start_conversation(
     tts = get_tts(request)
 
     # Build face match result
-    if req.match_status == "match_found" and req.person_id:
+    if req.match_status == "match_found" and req.visitor_id:
         repo = VisitorRepository(db)
-        person = await repo.get_person_by_id(uuid.UUID(req.person_id))
-        match_result = FaceMatchResult(
-            status=MatchResult.MATCH_FOUND,
-            person=person,
-            confidence=0.9
-        )
+        visitor = await repo.get_by_id(req.visitor_id)
+        if visitor:
+            match_result = FaceMatchResult(
+                status=MatchResult.MATCH_FOUND,
+                visitor=visitor,
+                confidence=0.9
+            )
+        else:
+            match_result = FaceMatchResult(
+                status=MatchResult.NO_MATCH,
+                message="Visitor not found"
+            )
     else:
         match_result = FaceMatchResult(
             status=MatchResult.NO_MATCH,
@@ -117,8 +120,6 @@ async def start_conversation(
         audio_bytes = await tts.synthesize(greeting_text)
         if audio_bytes:
             audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-
-        # Get speech marks for lip sync
         speech_marks = await tts.get_speech_marks(greeting_text)
 
     logger.info(
@@ -167,23 +168,9 @@ async def send_message(
         audio_bytes = await tts.synthesize(response_text)
         if audio_bytes:
             audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-
         speech_marks = await tts.get_speech_marks(response_text)
 
-    # Check if consent was granted (need to register face)
-    visitor_name = None
-    if session:
-        visitor_name = session.visitor_context.name
-
-        # Check for consent signal in messages
-        if session.messages:
-            last_system_msg = next(
-                (m for m in reversed(session.messages) if m.get("role") == "system"),
-                None
-            )
-            if last_system_msg and last_system_msg.get("content") == "CONSENT_GRANTED":
-                # Trigger registration (handled by frontend/websocket)
-                pass
+    visitor_name = session.visitor_context.name if session else None
 
     return ConversationResponse(
         session_id=req.session_id,

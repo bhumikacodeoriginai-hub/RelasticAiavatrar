@@ -1,26 +1,29 @@
 version: '3.8'
 
 services:
-  # PostgreSQL with pgvector extension
-  postgres:
-    image: pgvector/pgvector:pg16
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
     container_name: ai_receptionist_db
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: ai_receptionist
+      MYSQL_ROOT_PASSWORD: root_password_change_me
+      MYSQL_DATABASE: ai_receptionist
+      MYSQL_USER: ai_receptionist
+      MYSQL_PASSWORD: change_in_production
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
       - ./backend/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "ai_receptionist", "-pchange_in_production"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
 
-  # Redis for session management
+  # Redis for session management and caching
   redis:
     image: redis:7-alpine
     container_name: ai_receptionist_redis
@@ -43,8 +46,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/ai_receptionist
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=ai_receptionist
+      - DATABASE_PASSWORD=change_in_production
+      - DATABASE_NAME=ai_receptionist
       - REDIS_URL=redis://redis:6379/0
+      - APP_ENV=production
     env_file:
       - .env
     volumes:
@@ -52,7 +60,7 @@ services:
       - ./models:/app/models
       - ./assets:/app/assets
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -77,5 +85,5 @@ services:
       - backend
 
 volumes:
-  postgres_data:
+  mysql_data:
   redis_data:

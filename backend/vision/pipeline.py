@@ -10,8 +10,8 @@ This is the state machine that determines:
 """
 
 import asyncio
-from typing import Optional, Callable, Awaitable
-from dataclasses import dataclass
+from typing import Optional, Callable, Awaitable, Dict, Any
+from dataclasses import dataclass, field
 from enum import Enum
 import time
 
@@ -22,7 +22,7 @@ from vision.person_detection import PersonDetector, DetectedPerson
 from vision.face_detection import FaceDetector, DetectedFace
 from vision.face_embedding import FaceEmbedder
 from vision.face_matching import FaceMatcher, FaceMatchResult, MatchResult
-from vision.camera import CameraService, FrameData
+from vision.camera import FrameData
 
 logger = structlog.get_logger()
 
@@ -47,6 +47,7 @@ class PipelineResult:
     detected_person: Optional[DetectedPerson] = None
     detected_face: Optional[DetectedFace] = None
     match_result: Optional[FaceMatchResult] = None
+    recognition: Optional[Dict[str, Any]] = None
     frame: Optional[np.ndarray] = None
     timestamp: float = 0.0
 
@@ -70,7 +71,10 @@ class VisionPipeline:
         face_detector: FaceDetector,
         face_embedder: FaceEmbedder,
         face_matcher: FaceMatcher,
-        cooldown_seconds: float = 5.0
+        recognition_cooldown: float = 7.0,
+        min_face_size: int = 80,
+        person_debounce_frames: int = 5,
+        departure_frames: int = 10,
     ):
         """
         Initialize the vision pipeline.
@@ -80,13 +84,19 @@ class VisionPipeline:
             face_detector: InsightFace face detector
             face_embedder: Face embedding generator
             face_matcher: Face matching service
-            cooldown_seconds: Min time between processing same person
+            recognition_cooldown: Min seconds between re-identifying same person
+            min_face_size: Minimum face bbox size (pixels) to attempt recognition
+            person_debounce_frames: Frames of no-person before declaring absent
+            departure_frames: Frames of no-person before calling on_person_left
         """
         self.person_detector = person_detector
         self.face_detector = face_detector
         self.face_embedder = face_embedder
         self.face_matcher = face_matcher
-        self.cooldown_seconds = cooldown_seconds
+        self.recognition_cooldown = recognition_cooldown
+        self.min_face_size = min_face_size
+        self.person_debounce_frames = person_debounce_frames
+        self.departure_frames = departure_frames
 
         self.current_state = PipelineState.IDLE
         self._last_detection_time: float = 0
@@ -95,7 +105,6 @@ class VisionPipeline:
         self._on_known_person_callback: Optional[Callable] = None
         self._on_person_left_callback: Optional[Callable] = None
         self._no_person_count: int = 0
-        self._no_person_threshold: int = 10
 
     def on_new_person(self, callback: Callable[[PipelineResult], Awaitable[None]]) -> None:
         """Register callback for when a new person is detected."""
@@ -119,7 +128,7 @@ class VisionPipeline:
 
         Args:
             frame_data: Camera frame data
-            visitor_repo: Database repository for face matching
+            visitor_repo: VisitorRepository for face matching (optional)
 
         Returns:
             PipelineResult with detection state and details
@@ -131,13 +140,14 @@ class VisionPipeline:
             frame=frame
         )
 
-        # Step 1: Person Detection
+        # Step 1: Person Detection (YOLO - class 0 only)
         persons = self.person_detector.detect(frame)
         closest_person = self.person_detector.get_closest_person(persons)
 
         if closest_person is None:
+            # No person detected - debounce
             self._no_person_count += 1
-            if self._no_person_count >= self._no_person_threshold:
+            if self._no_person_count >= self.departure_frames:
                 if self.current_state != PipelineState.IDLE:
                     self.current_state = PipelineState.IDLE
                     self._current_person_embedding = None
@@ -145,22 +155,22 @@ class VisionPipeline:
                         await self._on_person_left_callback()
             return result
 
-        # Person found
+        # Person found - reset absence counter
         self._no_person_count = 0
         result.person_detected = True
         result.detected_person = closest_person
         result.state = PipelineState.PERSON_DETECTED
 
-        # Check cooldown (don't re-process the same person too quickly)
+        # Check recognition cooldown (don't re-process same person too quickly)
         current_time = time.time()
         if (
             self.current_state in (PipelineState.PERSON_IDENTIFIED, PipelineState.IN_CONVERSATION)
-            and current_time - self._last_detection_time < self.cooldown_seconds
+            and current_time - self._last_detection_time < self.recognition_cooldown
         ):
             result.state = self.current_state
             return result
 
-        # Step 2: Face Detection (within person bbox)
+        # Step 2: Face Detection (within person bounding box)
         faces = self.face_detector.detect_faces_in_region(frame, closest_person.bbox)
         best_face = self.face_detector.get_best_face(faces)
 
@@ -168,14 +178,24 @@ class VisionPipeline:
             result.state = PipelineState.PERSON_DETECTED
             return result
 
+        # Check minimum face size
+        face_w = best_face.bbox[2] - best_face.bbox[0]
+        face_h = best_face.bbox[3] - best_face.bbox[1]
+        if face_w < self.min_face_size or face_h < self.min_face_size:
+            # Face too small for reliable recognition
+            result.state = PipelineState.PERSON_DETECTED
+            result.recognition = {"status": "poor_quality", "reason": "face_too_small"}
+            return result
+
         result.face_detected = True
         result.detected_face = best_face
         result.state = PipelineState.FACE_DETECTED
 
-        # Step 3: Face Embedding
+        # Step 3: Face Embedding (ArcFace 512D)
         embedding = self.face_embedder.get_embedding_from_face(frame, best_face)
 
         if embedding is None:
+            result.recognition = {"status": "error", "reason": "embedding_failed"}
             return result
 
         # Check if this is the same person we already identified
@@ -189,9 +209,7 @@ class VisionPipeline:
 
         # Step 4: Face Matching (against database)
         if visitor_repo is not None:
-            match_result = await self.face_matcher.match_face(
-                embedding, visitor_repo
-            )
+            match_result = await self.face_matcher.match_face(embedding, visitor_repo)
             result.match_result = match_result
 
             if match_result.status == MatchResult.MATCH_FOUND:
@@ -199,6 +217,13 @@ class VisionPipeline:
                 self.current_state = PipelineState.PERSON_IDENTIFIED
                 self._current_person_embedding = embedding
                 self._last_detection_time = current_time
+
+                result.recognition = {
+                    "status": "match_found",
+                    "visitor_id": match_result.id,
+                    "visitor_name": match_result.name,
+                    "confidence": match_result.confidence
+                }
 
                 if self._on_known_person_callback:
                     await self._on_known_person_callback(result)
@@ -209,12 +234,26 @@ class VisionPipeline:
                 self._current_person_embedding = embedding
                 self._last_detection_time = current_time
 
+                result.recognition = {
+                    "status": "unknown",
+                    "visitor_id": None,
+                    "visitor_name": None,
+                    "confidence": 0.0
+                }
+
                 if self._on_new_person_callback:
                     await self._on_new_person_callback(result)
-
+            else:
+                result.recognition = {
+                    "status": match_result.status.value,
+                    "visitor_id": None,
+                    "visitor_name": None,
+                    "confidence": 0.0
+                }
         else:
             # No database available, treat as new
             result.state = PipelineState.NEW_PERSON
+            result.recognition = {"status": "unknown", "reason": "no_database"}
 
         return result
 

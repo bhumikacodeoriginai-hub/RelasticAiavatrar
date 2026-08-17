@@ -15,7 +15,7 @@ interface DashboardStats {
 }
 
 interface RecentVisitor {
-  person_id: string
+  visitor_id: string
   name: string
   company: string | null
   arrival_time: string
@@ -27,7 +27,10 @@ interface SystemStatus {
   camera_active: boolean
   ai_service_active: boolean
   tts_active: boolean
+  stt_active: boolean
   database_active: boolean
+  vision_active: boolean
+  websocket_active: boolean
   uptime_seconds: number
 }
 
@@ -184,7 +187,7 @@ function DashboardPage() {
                   </thead>
                   <tbody>
                     {recentVisitors.map((visitor) => (
-                      <tr key={visitor.person_id} className="border-b border-gray-800 hover:bg-gray-800/40">
+                      <tr key={visitor.visitor_id} className="border-b border-gray-800 hover:bg-gray-800/40">
                         <td className="py-3 px-3 text-sm text-white font-medium">
                           {visitor.name}
                         </td>
@@ -240,6 +243,14 @@ function DashboardPage() {
               <ServiceStatus
                 name="Text-to-Speech"
                 active={systemStatus?.tts_active ?? false}
+              />
+              <ServiceStatus
+                name="Speech-to-Text"
+                active={systemStatus?.stt_active ?? false}
+              />
+              <ServiceStatus
+                name="Vision AI"
+                active={systemStatus?.vision_active ?? false}
               />
               <ServiceStatus
                 name="Camera"

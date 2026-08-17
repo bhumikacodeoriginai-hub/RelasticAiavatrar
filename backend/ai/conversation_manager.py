@@ -14,7 +14,6 @@ import structlog
 
 from ai.bedrock import BedrockClient
 from ai.prompts import PromptBuilder, VisitorContext, VisitorStatus
-from database.models import Person
 from vision.face_matching import FaceMatchResult, MatchResult
 
 logger = structlog.get_logger()
@@ -99,18 +98,29 @@ class ConversationManager:
         """
         session_id = str(uuid.uuid4())
 
-        if match_result.status == MatchResult.MATCH_FOUND and match_result.person:
+        if match_result.status == MatchResult.MATCH_FOUND and match_result.visitor:
             # Returning visitor
-            person = match_result.person
+            visitor = match_result.visitor
             visitor_context = VisitorContext(
-                name=person.name,
+                name=visitor.name,
                 recognition_status=VisitorStatus.RETURNING,
-                company=person.company,
-                role=person.role,
-                visit_count=person.visit_count,
-                last_visit=person.last_seen.isoformat() if person.last_seen else None
+                company=visitor.company if hasattr(visitor, 'company') else None,
+                role=visitor.role if hasattr(visitor, 'role') else None,
+                visit_count=visitor.visit_count if hasattr(visitor, 'visit_count') else 0,
+                last_visit=visitor.last_seen.isoformat() if hasattr(visitor, 'last_seen') and visitor.last_seen else None
             )
             initial_state = ConversationState.GREETING_RETURNING
+            visitor_id = visitor.visitor_id if hasattr(visitor, 'visitor_id') else None
+
+        elif match_result.status == MatchResult.MATCH_FOUND and match_result.visitor_name:
+            # Match found with name but no full visitor object (simulated)
+            visitor_context = VisitorContext(
+                name=match_result.visitor_name,
+                recognition_status=VisitorStatus.RETURNING,
+                visit_count=match_result.visit_count,
+            )
+            initial_state = ConversationState.GREETING_RETURNING
+            visitor_id = match_result.visitor_id
 
         else:
             # New visitor
@@ -118,12 +128,13 @@ class ConversationManager:
                 recognition_status=VisitorStatus.NEW
             )
             initial_state = ConversationState.GREETING_NEW
+            visitor_id = None
 
         session = ConversationSession(
             session_id=session_id,
             state=initial_state,
             visitor_context=visitor_context,
-            person_id=match_result.person.person_id if match_result.person else None
+            person_id=visitor_id
         )
 
         self.active_sessions[session_id] = session

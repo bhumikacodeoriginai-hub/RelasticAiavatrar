@@ -1,5 +1,6 @@
 """
 SQLAlchemy ORM models for the AI Receptionist application.
+Standardized on MySQL. Face embeddings stored as JSON (512-dim float arrays).
 """
 
 import uuid
@@ -7,16 +8,16 @@ from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import (
-    Column, String, Integer, Float, Text, DateTime,
-    ForeignKey, Enum, Boolean, Index
+    String, Integer, Float, Text, DateTime, JSON,
+    ForeignKey, Boolean, Index
 )
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID
-from pgvector.sqlalchemy import Vector
 import enum
 
 from database.database import Base
 
+
+# ============== Enums ==============
 
 class ConsentStatus(str, enum.Enum):
     PENDING = "pending"
@@ -39,46 +40,81 @@ class EmployeeAvailability(str, enum.Enum):
     OFFLINE = "offline"
 
 
-class Person(Base):
-    """Stores all recognized visitors."""
-    __tablename__ = "persons"
+class AppointmentStatus(str, enum.Enum):
+    SCHEDULED = "scheduled"
+    CONFIRMED = "confirmed"
+    ARRIVED = "arrived"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    NO_SHOW = "no_show"
 
-    person_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+
+class NotificationType(str, enum.Enum):
+    VISITOR_ARRIVED = "visitor_arrived"
+    APPOINTMENT_REMINDER = "appointment_reminder"
+    VISITOR_WAITING = "visitor_waiting"
+    SYSTEM = "system"
+
+
+# ============== Models ==============
+
+class Visitor(Base):
+    """Stores all recognized visitors."""
+    __tablename__ = "visitors"
+
+    visitor_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     company: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     role: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    image_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    face_embedding = Column(Vector(512), nullable=True)
+    profile_image_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    face_embedding: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     consent_status: Mapped[str] = mapped_column(
-        String(20), default=ConsentStatus.PENDING.value
+        String(20), default=ConsentStatus.PENDING.value, nullable=False
+    )
+    consent_timestamp: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
     )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    last_seen: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    visit_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime, default=datetime.utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
-    last_seen: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    visit_count: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationships
-    visits: Mapped[List["Visit"]] = relationship(back_populates="person", cascade="all, delete-orphan")
-    conversations: Mapped[List["Conversation"]] = relationship(back_populates="person")
+    visits: Mapped[List["Visit"]] = relationship(
+        back_populates="visitor", cascade="all, delete-orphan"
+    )
+    conversations: Mapped[List["Conversation"]] = relationship(
+        back_populates="visitor"
+    )
+    appointments: Mapped[List["Appointment"]] = relationship(
+        back_populates="visitor"
+    )
+
+    __table_args__ = (
+        Index("idx_visitors_name", "name"),
+        Index("idx_visitors_last_seen", "last_seen"),
+        Index("idx_visitors_consent", "consent_status"),
+    )
 
 
 class Employee(Base):
     """Internal office employees."""
     __tablename__ = "employees"
 
-    employee_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    employee_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
@@ -87,79 +123,135 @@ class Employee(Base):
     designation: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     office_location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     availability: Mapped[str] = mapped_column(
-        String(20), default=EmployeeAvailability.AVAILABLE.value
+        String(20), default=EmployeeAvailability.AVAILABLE.value, nullable=False
     )
-    face_embedding = Column(Vector(512), nullable=True)
+    face_embedding: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime, default=datetime.utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    appointments: Mapped[List["Appointment"]] = relationship(
+        back_populates="employee"
+    )
+    notifications: Mapped[List["Notification"]] = relationship(
+        back_populates="employee"
+    )
+
+    __table_args__ = (
+        Index("idx_employees_name", "name"),
+        Index("idx_employees_department", "department"),
+        Index("idx_employees_availability", "availability"),
     )
 
 
 class Visit(Base):
-    """Tracks each visit instance."""
+    """Tracks each physical visit instance."""
     __tablename__ = "visits"
 
-    visit_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    visit_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    person_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("persons.person_id", ondelete="CASCADE")
+    visitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("visitors.visitor_id", ondelete="CASCADE"), nullable=False
     )
-    employee_to_meet: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("employees.employee_id"), nullable=True
+    employee_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("employees.employee_id"), nullable=True
     )
     arrival_time: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime, default=datetime.utcnow, nullable=False
     )
-    departure_time: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    departure_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     purpose: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
-        String(20), default=VisitStatus.ARRIVED.value
+        String(20), default=VisitStatus.ARRIVED.value, nullable=False
     )
-    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
+    conversation_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime, default=datetime.utcnow, nullable=False
     )
 
     # Relationships
-    person: Mapped["Person"] = relationship(back_populates="visits")
+    visitor: Mapped["Visitor"] = relationship(back_populates="visits")
+
+    __table_args__ = (
+        Index("idx_visits_visitor_id", "visitor_id"),
+        Index("idx_visits_arrival", "arrival_time"),
+        Index("idx_visits_status", "status"),
+    )
+
+
+class Appointment(Base):
+    """Scheduled appointments between visitors and employees."""
+    __tablename__ = "appointments"
+
+    appointment_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    visitor_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("visitors.visitor_id", ondelete="SET NULL"), nullable=True
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.employee_id"), nullable=False
+    )
+    appointment_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    purpose: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), default=AppointmentStatus.SCHEDULED.value, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    visitor: Mapped[Optional["Visitor"]] = relationship(back_populates="appointments")
+    employee: Mapped["Employee"] = relationship(back_populates="appointments")
+
+    __table_args__ = (
+        Index("idx_appointments_visitor", "visitor_id"),
+        Index("idx_appointments_employee", "employee_id"),
+        Index("idx_appointments_time", "appointment_time"),
+        Index("idx_appointments_status", "status"),
+    )
 
 
 class Conversation(Base):
     """Stores conversation sessions."""
     __tablename__ = "conversations"
 
-    conversation_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    person_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("persons.person_id", ondelete="SET NULL"), nullable=True
+    visitor_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("visitors.visitor_id", ondelete="SET NULL"), nullable=True
     )
     session_id: Mapped[str] = mapped_column(String(255), nullable=False)
     started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime, default=datetime.utcnow, nullable=False
     )
-    ended_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime, default=datetime.utcnow, nullable=False
     )
 
     # Relationships
-    person: Mapped[Optional["Person"]] = relationship(back_populates="conversations")
+    visitor: Mapped[Optional["Visitor"]] = relationship(back_populates="conversations")
     messages: Mapped[List["ConversationMessage"]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_conversations_visitor", "visitor_id"),
+        Index("idx_conversations_session", "session_id"),
     )
 
 
@@ -167,17 +259,77 @@ class ConversationMessage(Base):
     """Individual messages in a conversation."""
     __tablename__ = "conversation_messages"
 
-    message_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    message_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    conversation_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("conversations.conversation_id", ondelete="CASCADE")
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime, default=datetime.utcnow, nullable=False
     )
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+    __table_args__ = (
+        Index("idx_messages_conversation", "conversation_id"),
+    )
+
+
+class Notification(Base):
+    """Notifications sent to employees."""
+    __tablename__ = "notifications"
+
+    notification_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    employee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("employees.employee_id"), nullable=False
+    )
+    visitor_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("visitors.visitor_id", ondelete="SET NULL"), nullable=True
+    )
+    notification_type: Mapped[str] = mapped_column(
+        String(30), default=NotificationType.VISITOR_ARRIVED.value, nullable=False
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    employee: Mapped["Employee"] = relationship(back_populates="notifications")
+
+    __table_args__ = (
+        Index("idx_notifications_employee", "employee_id"),
+        Index("idx_notifications_read", "is_read"),
+    )
+
+
+class AuditLog(Base):
+    """Audit trail for sensitive operations."""
+    __tablename__ = "audit_logs"
+
+    log_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    entity_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    performed_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_audit_action", "action"),
+        Index("idx_audit_entity", "entity_type", "entity_id"),
+        Index("idx_audit_created", "created_at"),
+    )

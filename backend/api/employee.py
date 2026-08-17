@@ -3,17 +3,15 @@ Employee API endpoints.
 Handles employee directory and availability management.
 """
 
-import uuid
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from database.database import get_db
-from database.models import Employee
+from database.repositories import EmployeeRepository, NotificationRepository
 
 logger = structlog.get_logger()
 
@@ -61,17 +59,57 @@ async def list_employees(
     db: AsyncSession = Depends(get_db)
 ):
     """List all employees, optionally filtered by department."""
-    query = select(Employee)
-    if department:
-        query = query.where(Employee.department == department)
-    query = query.order_by(Employee.name)
-
-    result = await db.execute(query)
-    employees = result.scalars().all()
+    repo = EmployeeRepository(db)
+    employees = await repo.get_all(department=department)
 
     return [
         EmployeeResponse(
-            employee_id=str(e.employee_id),
+            employee_id=e.employee_id,
+            name=e.name,
+            email=e.email,
+            phone=e.phone,
+            department=e.department,
+            designation=e.designation,
+            office_location=e.office_location,
+            availability=e.availability
+        )
+        for e in employees
+    ]
+
+
+@router.get("/search/{name}", response_model=List[EmployeeResponse])
+async def search_employee(
+    name: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Search for employees by name (partial match)."""
+    repo = EmployeeRepository(db)
+    employees = await repo.search_by_name(name)
+
+    return [
+        EmployeeResponse(
+            employee_id=e.employee_id,
+            name=e.name,
+            email=e.email,
+            phone=e.phone,
+            department=e.department,
+            designation=e.designation,
+            office_location=e.office_location,
+            availability=e.availability
+        )
+        for e in employees
+    ]
+
+
+@router.get("/available/list", response_model=List[EmployeeResponse])
+async def list_available_employees(db: AsyncSession = Depends(get_db)):
+    """List all currently available employees."""
+    repo = EmployeeRepository(db)
+    employees = await repo.get_available()
+
+    return [
+        EmployeeResponse(
+            employee_id=e.employee_id,
             name=e.name,
             email=e.email,
             phone=e.phone,
@@ -90,16 +128,14 @@ async def get_employee(
     db: AsyncSession = Depends(get_db)
 ):
     """Get a specific employee by ID."""
-    result = await db.execute(
-        select(Employee).where(Employee.employee_id == uuid.UUID(employee_id))
-    )
-    employee = result.scalar_one_or_none()
+    repo = EmployeeRepository(db)
+    employee = await repo.get_by_id(employee_id)
 
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
     return EmployeeResponse(
-        employee_id=str(employee.employee_id),
+        employee_id=employee.employee_id,
         name=employee.name,
         email=employee.email,
         phone=employee.phone,
@@ -116,24 +152,24 @@ async def create_employee(
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new employee record."""
-    new_employee = Employee(
-        employee_id=uuid.uuid4(),
+    repo = EmployeeRepository(db)
+    new_employee = await repo.create(
         name=employee.name,
         email=employee.email,
         phone=employee.phone,
         department=employee.department,
         designation=employee.designation,
         office_location=employee.office_location,
-        availability=employee.availability
     )
 
-    db.add(new_employee)
-    await db.commit()
+    if employee.availability != "available":
+        await repo.update_availability(new_employee.employee_id, employee.availability)
 
-    logger.info("Employee created", employee_id=str(new_employee.employee_id))
+    await db.commit()
+    logger.info("Employee created", employee_id=new_employee.employee_id)
 
     return EmployeeResponse(
-        employee_id=str(new_employee.employee_id),
+        employee_id=new_employee.employee_id,
         name=new_employee.name,
         email=new_employee.email,
         phone=new_employee.phone,
@@ -151,72 +187,11 @@ async def update_availability(
     db: AsyncSession = Depends(get_db)
 ):
     """Update an employee's availability status."""
-    result = await db.execute(
-        select(Employee).where(Employee.employee_id == uuid.UUID(employee_id))
-    )
-    employee = result.scalar_one_or_none()
+    repo = EmployeeRepository(db)
+    success = await repo.update_availability(employee_id, avail.availability)
 
-    if not employee:
+    if not success:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    await db.execute(
-        update(Employee)
-        .where(Employee.employee_id == uuid.UUID(employee_id))
-        .values(availability=avail.availability)
-    )
     await db.commit()
-
     return {"message": f"Availability updated to: {avail.availability}"}
-
-
-@router.get("/search/{name}", response_model=List[EmployeeResponse])
-async def search_employee(
-    name: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """Search for employees by name (partial match)."""
-    result = await db.execute(
-        select(Employee)
-        .where(Employee.name.ilike(f"%{name}%"))
-        .order_by(Employee.name)
-    )
-    employees = result.scalars().all()
-
-    return [
-        EmployeeResponse(
-            employee_id=str(e.employee_id),
-            name=e.name,
-            email=e.email,
-            phone=e.phone,
-            department=e.department,
-            designation=e.designation,
-            office_location=e.office_location,
-            availability=e.availability
-        )
-        for e in employees
-    ]
-
-
-@router.get("/available/list", response_model=List[EmployeeResponse])
-async def list_available_employees(db: AsyncSession = Depends(get_db)):
-    """List all currently available employees."""
-    result = await db.execute(
-        select(Employee)
-        .where(Employee.availability == "available")
-        .order_by(Employee.name)
-    )
-    employees = result.scalars().all()
-
-    return [
-        EmployeeResponse(
-            employee_id=str(e.employee_id),
-            name=e.name,
-            email=e.email,
-            phone=e.phone,
-            department=e.department,
-            designation=e.designation,
-            office_location=e.office_location,
-            availability=e.availability
-        )
-        for e in employees
-    ]
