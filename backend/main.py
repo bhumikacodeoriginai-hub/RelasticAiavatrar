@@ -128,12 +128,19 @@ async def lifespan(app: FastAPI):
         face_detector = FaceDetector(
             model_name=settings.face_embedding_model,
             det_threshold=settings.min_detection_confidence,
-            max_faces=settings.max_faces_per_frame
+            max_faces=settings.max_faces_per_frame,
+            min_face_quality=settings.min_face_quality,
         )
         await face_detector.initialize()
 
-        face_embedder = FaceEmbedder(model_name=settings.face_embedding_model)
-        await face_embedder.initialize()
+        # Share the InsightFace model instance to avoid duplicate loading
+        shared_model = face_detector.get_model()
+
+        face_embedder = FaceEmbedder(
+            model_name=settings.face_embedding_model,
+            shared_app=shared_model
+        )
+        await face_embedder.initialize(shared_app=shared_model)
 
         face_matcher = FaceMatcher(
             similarity_threshold=settings.face_similarity_threshold
@@ -147,6 +154,7 @@ async def lifespan(app: FastAPI):
             face_matcher=face_matcher,
             recognition_cooldown=settings.recognition_cooldown_seconds,
             min_face_size=settings.min_face_size,
+            person_debounce_frames=settings.person_debounce_frames,
         )
         app.state.vision_pipeline = vision_pipeline
         app.state.person_detector = person_detector
@@ -154,7 +162,7 @@ async def lifespan(app: FastAPI):
         app.state.face_embedder = face_embedder
         app.state.face_matcher = face_matcher
 
-        logger.info("✅ Vision pipeline initialized")
+        logger.info("✅ Vision pipeline initialized (shared model instance)")
     except Exception as e:
         logger.error("❌ Vision pipeline initialization failed", error=str(e))
         logger.info("   (This is expected if models are not downloaded yet)")

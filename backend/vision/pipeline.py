@@ -125,6 +125,7 @@ class VisionPipeline:
     ) -> PipelineResult:
         """
         Process a single frame through the entire pipeline.
+        Uses run_in_executor for blocking CV operations.
 
         Args:
             frame_data: Camera frame data
@@ -141,7 +142,10 @@ class VisionPipeline:
         )
 
         # Step 1: Person Detection (YOLO - class 0 only)
-        persons = self.person_detector.detect(frame)
+        # Run in executor to avoid blocking event loop
+        persons = await asyncio.get_event_loop().run_in_executor(
+            None, self.person_detector.detect, frame
+        )
         closest_person = self.person_detector.get_closest_person(persons)
 
         if closest_person is None:
@@ -171,7 +175,10 @@ class VisionPipeline:
             return result
 
         # Step 2: Face Detection (within person bounding box)
-        faces = self.face_detector.detect_faces_in_region(frame, closest_person.bbox)
+        # Run in executor to avoid blocking
+        faces = await asyncio.get_event_loop().run_in_executor(
+            None, self.face_detector.detect_faces_in_region, frame, closest_person.bbox
+        )
         best_face = self.face_detector.get_best_face(faces)
 
         if best_face is None:
@@ -192,7 +199,10 @@ class VisionPipeline:
         result.state = PipelineState.FACE_DETECTED
 
         # Step 3: Face Embedding (ArcFace 512D)
-        embedding = self.face_embedder.get_embedding_from_face(frame, best_face)
+        # Run in executor to avoid blocking
+        embedding = await asyncio.get_event_loop().run_in_executor(
+            None, self.face_embedder.get_embedding_from_face, frame, best_face
+        )
 
         if embedding is None:
             result.recognition = {"status": "error", "reason": "embedding_failed"}

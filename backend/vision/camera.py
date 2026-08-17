@@ -1,9 +1,11 @@
 """
 Camera Service for continuous video capture.
 Manages the webcam/IP camera connection and frame processing pipeline.
+All blocking OpenCV operations use asyncio.to_thread.
 """
 
 import asyncio
+import base64
 import time
 from typing import Optional, Callable, Awaitable
 from dataclasses import dataclass
@@ -12,8 +14,6 @@ from enum import Enum
 import cv2
 import numpy as np
 import structlog
-
-from config import settings
 
 logger = structlog.get_logger()
 
@@ -41,8 +41,7 @@ class FrameData:
         return buffer.tobytes()
 
     def to_base64(self) -> str:
-        """Convert frame to base64 string."""
-        import base64
+        """Convert frame to base64-encoded JPEG string."""
         jpeg_bytes = self.to_jpeg()
         return base64.b64encode(jpeg_bytes).decode('utf-8')
 
@@ -50,7 +49,7 @@ class FrameData:
 class CameraService:
     """
     Manages camera capture and frame distribution.
-    Supports both USB webcams and IP cameras.
+    Supports USB webcams, IP cameras, and video files.
     """
 
     def __init__(
@@ -60,15 +59,6 @@ class CameraService:
         height: int = 720,
         fps: int = 30
     ):
-        """
-        Initialize the camera service.
-
-        Args:
-            camera_index: Camera device index (0 for default webcam)
-            width: Capture width
-            height: Capture height
-            fps: Target frames per second
-        """
         self.camera_index = camera_index
         self.width = width
         self.height = height
@@ -81,21 +71,24 @@ class CameraService:
         self._frame_callbacks: list = []
 
     async def start(self) -> bool:
-        """Start the camera capture."""
+        """Start the camera capture (non-blocking)."""
         try:
-            self.cap = cv2.VideoCapture(self.camera_index)
+            def _open():
+                cap = cv2.VideoCapture(self.camera_index)
+                if not cap.isOpened():
+                    return None
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                cap.set(cv2.CAP_PROP_FPS, self.fps)
+                return cap
 
-            if not self.cap.isOpened():
+            self.cap = await asyncio.get_event_loop().run_in_executor(None, _open)
+
+            if self.cap is None:
                 logger.error("Failed to open camera", index=self.camera_index)
                 self.status = CameraStatus.ERROR
                 return False
 
-            # Set camera properties
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            self.cap.set(cv2.CAP_PROP_FPS, self.fps)
-
-            # Read actual properties (camera might not support requested values)
             actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             actual_fps = int(self.cap.get(cv2.CAP_PROP_FPS))
@@ -120,14 +113,16 @@ class CameraService:
         """Stop the camera capture."""
         self._running = False
         if self.cap is not None:
-            self.cap.release()
+            def _release():
+                self.cap.release()
+            await asyncio.get_event_loop().run_in_executor(None, _release)
             self.cap = None
         self.status = CameraStatus.DISCONNECTED
         logger.info("Camera stopped")
 
     async def capture_frame(self) -> Optional[FrameData]:
         """
-        Capture a single frame from the camera.
+        Capture a single frame from the camera (non-blocking).
 
         Returns:
             FrameData object or None if capture failed
@@ -135,9 +130,12 @@ class CameraService:
         if self.cap is None or not self.cap.isOpened():
             return None
 
-        ret, frame = self.cap.read()
-        if not ret:
-            logger.warning("Failed to capture frame")
+        def _read():
+            return self.cap.read()
+
+        ret, frame = await asyncio.get_event_loop().run_in_executor(None, _read)
+
+        if not ret or frame is None:
             return None
 
         self.frame_count += 1
@@ -154,13 +152,9 @@ class CameraService:
         self._latest_frame = frame_data
         return frame_data
 
-    async def capture_loop(
-        self,
-        process_interval: float = 0.5
-    ) -> None:
+    async def capture_loop(self, process_interval: float = 0.5) -> None:
         """
         Continuous capture loop that processes frames at specified intervals.
-        For real-time processing, set interval based on processing speed.
 
         Args:
             process_interval: Seconds between processed frames
@@ -179,18 +173,15 @@ class CameraService:
 
             current_time = time.time()
 
-            # Process frame at specified interval
             if current_time - last_process_time >= process_interval:
                 last_process_time = current_time
 
-                # Notify all registered callbacks
                 for callback in self._frame_callbacks:
                     try:
                         await callback(frame_data)
                     except Exception as e:
                         logger.error("Frame callback error", error=str(e))
 
-            # Small sleep to prevent CPU overload
             await asyncio.sleep(1.0 / self.fps)
 
     def register_callback(
@@ -207,19 +198,28 @@ class CameraService:
     def is_running(self) -> bool:
         return self._running
 
-    async def capture_single_image(self) -> Optional[np.ndarray]:
-        """Capture a single high-quality image (for face registration)."""
+    async def capture_high_quality_image(self) -> Optional[np.ndarray]:
+        """
+        Capture a single high-quality image (for face registration).
+        Captures multiple frames to allow auto-exposure to settle.
+        """
         if self.cap is None or not self.cap.isOpened():
             return None
 
-        # Capture multiple frames and use the last one (auto-exposure)
+        frame = None
         for _ in range(5):
-            ret, frame = self.cap.read()
+            def _read():
+                return self.cap.read()
+            ret, frame = await asyncio.get_event_loop().run_in_executor(None, _read)
             await asyncio.sleep(0.05)
 
-        if ret:
-            return frame
-        return None
+        return frame if frame is not None else None
+
+    async def health_check(self) -> bool:
+        """Check if camera is accessible."""
+        if self.cap is None:
+            return False
+        return self.cap.isOpened()
 
 
 class MockCameraService(CameraService):
@@ -235,8 +235,10 @@ class MockCameraService(CameraService):
     async def start(self) -> bool:
         """Start with a video file or generate mock frames."""
         if self.video_path:
-            self.cap = cv2.VideoCapture(self.video_path)
-            if self.cap.isOpened():
+            def _open():
+                return cv2.VideoCapture(self.video_path)
+            self.cap = await asyncio.get_event_loop().run_in_executor(None, _open)
+            if self.cap and self.cap.isOpened():
                 self.status = CameraStatus.CONNECTED
                 self._running = True
                 logger.info("Mock camera started with video", path=self.video_path)
