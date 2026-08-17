@@ -31,12 +31,17 @@ function ConversationPanel({
 
   const getStateLabel = (state: string) => {
     switch (state) {
+      case 'person_detected': return 'Person detected'
+      case 'identifying': return 'Identifying...'
       case 'greeting_new': return 'Welcoming new visitor'
       case 'greeting_returning': return 'Welcoming back'
       case 'waiting_for_name': return 'Waiting for name'
-      case 'asking_consent': return 'Asking consent'
+      case 'asking_consent': return 'Asking biometric consent'
+      case 'registering_visitor': return 'Registering visitor'
       case 'active_conversation': return 'In conversation'
-      case 'farewell': return 'Saying goodbye'
+      case 'waiting_for_employee': return 'Looking up employee'
+      case 'waiting_for_appointment': return 'Checking appointment'
+      case 'ending': return 'Saying goodbye'
       case 'ended': return 'Session ended'
       default: return 'Idle'
     }

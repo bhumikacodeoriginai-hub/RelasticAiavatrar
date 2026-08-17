@@ -13,7 +13,6 @@ interface Message {
   timestamp: string
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
 
 function ReceptionistPage() {
@@ -26,8 +25,10 @@ function ReceptionistPage() {
   const [sessionState, setSessionState] = useState('idle')
   const [personDetected, setPersonDetected] = useState(false)
   const [faceDetected, setFaceDetected] = useState(false)
+  const [recognitionStatus, setRecognitionStatus] = useState<string | null>(null)
+  const [showConsentButtons, setShowConsentButtons] = useState(false)
   const audioRef = useRef<HTMLAudioElement>(null)
-  const clientId = useRef(`client_${Date.now()}`).current
+  const clientId = useRef(`client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`).current
 
   // WebSocket for real-time communication
   const { isConnected, sendMessage } = useWebSocket(
@@ -63,14 +64,50 @@ function ReceptionistPage() {
         setPersonDetected(data.person_detected as boolean)
         setFaceDetected(data.face_detected as boolean)
         break
+      case 'recognition':
+        handleRecognition(data)
+        break
+      case 'registration':
+        handleRegistration(data)
+        break
       case 'state':
         setSessionState(data.state as string)
         if (data.state === 'ended') {
           setSessionId(null)
           setVisitorName(null)
+          setShowConsentButtons(false)
         }
         break
+      case 'error':
+        console.error('WebSocket error:', data.message)
+        break
     }
+  }
+
+  function handleRecognition(data: Record<string, unknown>) {
+    const status = data.status as string
+    setRecognitionStatus(status)
+    setPersonDetected(data.person_detected as boolean || false)
+    setFaceDetected(data.face_detected as boolean || false)
+
+    if (status === 'match_found' && data.visitor_name) {
+      setVisitorName(data.visitor_name as string)
+    }
+  }
+
+  function handleRegistration(data: Record<string, unknown>) {
+    const status = data.status as string
+    if (status === 'success') {
+      // Show success notification
+      const systemMsg: Message = {
+        id: `msg_${Date.now()}`,
+        role: 'system',
+        content: `✅ Visitor registered successfully`,
+        timestamp: new Date().toISOString(),
+      }
+      setMessages(prev => [...prev, systemMsg])
+    }
+    setShowConsentButtons(false)
   }
 
   function handleAIResponse(data: Record<string, unknown>) {
@@ -87,6 +124,13 @@ function ReceptionistPage() {
     }
     setSessionState(state)
 
+    // Show consent buttons when in asking_consent state
+    if (state === 'asking_consent') {
+      setShowConsentButtons(true)
+    } else {
+      setShowConsentButtons(false)
+    }
+
     // Add AI message
     if (text) {
       const newMessage: Message = {
@@ -98,8 +142,14 @@ function ReceptionistPage() {
       setMessages(prev => [...prev, newMessage])
     }
 
-    // Play audio
+    // Play audio (barge-in: stop current audio if new response arrives)
     if (audio && audioRef.current) {
+      // Stop any currently playing audio
+      if (isSpeaking) {
+        audioRef.current.pause()
+        audioRef.current.currentTime = 0
+      }
+
       setIsSpeaking(true)
       setAvatarState('speaking')
       const audioBlob = new Blob(
@@ -108,9 +158,7 @@ function ReceptionistPage() {
       )
       const audioUrl = URL.createObjectURL(audioBlob)
       audioRef.current.src = audioUrl
-      audioRef.current.play().then(() => {
-        // Start listening after avatar finishes speaking
-      }).catch(err => {
+      audioRef.current.play().catch(err => {
         console.error('Audio playback error:', err)
         setIsSpeaking(false)
         setAvatarState('listening')
@@ -131,6 +179,13 @@ function ReceptionistPage() {
       }
       setMessages(prev => [...prev, newMessage])
 
+      // If visitor is speaking while avatar is speaking (barge-in)
+      if (isSpeaking && audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.currentTime = 0
+        setIsSpeaking(false)
+      }
+
       // Send to WebSocket
       setAvatarState('thinking')
       sendMessage({
@@ -150,12 +205,21 @@ function ReceptionistPage() {
     }
   }
 
+  // Handle consent button clicks
+  const handleConsent = useCallback((granted: boolean) => {
+    sendMessage({
+      type: 'consent',
+      value: granted,
+    })
+    setShowConsentButtons(false)
+  }, [sendMessage])
+
   // Start a new conversation (simulated trigger)
-  const startNewSession = useCallback(async (isReturning: boolean = false) => {
+  const startNewSession = useCallback((isReturning: boolean = false) => {
     sendMessage({
       type: 'start_session',
       match_status: isReturning ? 'match_found' : 'no_match',
-      person_name: isReturning ? 'Rahul' : undefined,
+      visitor_name: isReturning ? 'Rahul' : undefined,
       visit_count: isReturning ? 5 : 0,
     })
 
@@ -176,6 +240,8 @@ function ReceptionistPage() {
       setSessionId(null)
       setVisitorName(null)
       setSessionState('idle')
+      setShowConsentButtons(false)
+      setRecognitionStatus(null)
     }
   }, [sessionId, sendMessage, stopListening])
 
@@ -192,8 +258,7 @@ function ReceptionistPage() {
   const handleAudioEnded = () => {
     setIsSpeaking(false)
     setAvatarState('listening')
-    // Resume listening after avatar speaks
-    if (isSupported && !isListening) {
+    if (isSupported && !isListening && sessionId) {
       startListening()
     }
   }
@@ -213,6 +278,24 @@ function ReceptionistPage() {
               state={avatarState}
               name={visitorName || undefined}
             />
+
+            {/* Consent Buttons */}
+            {showConsentButtons && (
+              <div className="mt-4 flex gap-3">
+                <button
+                  onClick={() => handleConsent(true)}
+                  className="px-6 py-3 rounded-xl bg-green-600 hover:bg-green-700 text-white font-medium transition-all"
+                >
+                  ✓ Yes, remember me
+                </button>
+                <button
+                  onClick={() => handleConsent(false)}
+                  className="px-6 py-3 rounded-xl bg-gray-600 hover:bg-gray-700 text-white font-medium transition-all"
+                >
+                  ✗ No thanks
+                </button>
+              </div>
+            )}
 
             {/* Controls */}
             <div className="mt-6 flex flex-wrap gap-3 justify-center">
@@ -253,12 +336,19 @@ function ReceptionistPage() {
               )}
             </div>
 
-            {/* Connection status */}
-            <div className="mt-4 flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-              <span className="text-xs text-gray-400">
-                {isConnected ? 'Connected to server' : 'Disconnected'}
-              </span>
+            {/* Status indicators */}
+            <div className="mt-4 flex flex-col items-center gap-1">
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+                <span className="text-xs text-gray-400">
+                  {isConnected ? 'Connected' : 'Disconnected'}
+                </span>
+              </div>
+              {recognitionStatus && (
+                <span className="text-xs text-gray-400">
+                  Recognition: {recognitionStatus}
+                </span>
+              )}
             </div>
           </div>
 
