@@ -231,3 +231,48 @@ async def get_active_sessions(request: Request, _user: dict = Depends(require_vi
     return {
         "active_sessions": conv_manager.get_active_session_count()
     }
+
+
+
+# === Emotion Analysis Endpoint ===
+
+class EmotionAnalysisRequest(BaseModel):
+    """Request to analyze emotion from text for avatar animation."""
+    text: str = Field(..., min_length=1, max_length=2000)
+    conversation_state: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class EmotionAnalysisResponse(BaseModel):
+    """Emotion analysis result for the frontend avatar."""
+    emotion: str
+    intensity: float
+    gesture: Optional[str] = None
+    gesture_intensity: Optional[float] = None
+
+
+@router.post("/emotion", response_model=EmotionAnalysisResponse)
+async def analyze_emotion(
+    req: EmotionAnalysisRequest,
+    request: Request,
+    _user: dict = Depends(require_receptionist_or_above),
+):
+    """
+    Analyze text to determine avatar emotion and gesture cues.
+
+    Used by the frontend to drive the Angelica avatar's 52 ARKit blendshape
+    emotion system when backend-initiated emotion signals are needed.
+    """
+    from ai.emotion_analyzer import emotion_analyzer
+
+    result = emotion_analyzer.analyze(
+        text=req.text,
+        conversation_state=req.conversation_state,
+    )
+
+    return EmotionAnalysisResponse(
+        emotion=result.emotion.value,
+        intensity=result.intensity,
+        gesture=result.gesture.value if result.gesture else None,
+        gesture_intensity=result.gesture_intensity,
+    )

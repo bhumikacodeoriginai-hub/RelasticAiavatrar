@@ -30,6 +30,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        # Skip OPTIONS preflight requests (handled by CORS middleware)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         response = await call_next(request)
 
         if not settings.enable_security_headers:
