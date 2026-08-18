@@ -20,22 +20,24 @@ boto3==1.34.0
 botocore==1.34.0
 
 # Computer Vision
-opencv-python-headless==4.8.1.78
-numpy==1.26.2
-Pillow==10.1.0
+opencv-python-headless>=4.8.1
+numpy>=1.26.0
+Pillow>=10.1.0
 
 # Face Recognition
 insightface==0.7.3
-onnxruntime==1.16.3
+onnxruntime>=1.17.0
 
 # Person Detection (YOLO)
-ultralytics==8.0.230
+ultralytics>=8.0.230
 
 # Audio / Voice
 sounddevice==0.4.6
 soundfile==0.12.1
-webrtcvad==2.0.10
-scipy==1.11.4
+# webrtcvad requires C compiler on Windows; use py-webrtcvad as fallback
+webrtcvad==2.0.10; platform_system != "Windows"
+py-webrtcvad>=0.3.0; platform_system == "Windows"
+scipy>=1.11.4
 
 # ML Utilities
 scikit-learn==1.3.2
