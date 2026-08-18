@@ -250,26 +250,27 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
-)
-
-# Security Headers Middleware
-from middleware.security_headers import SecurityHeadersMiddleware
-app.add_middleware(SecurityHeadersMiddleware)
+# Audit Logging Middleware (logs state-changing operations)
+from middleware.audit import AuditMiddleware
+app.add_middleware(AuditMiddleware)
 
 # Rate Limiting Middleware
 from middleware.rate_limiter import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware)
 
-# Audit Logging Middleware (logs state-changing operations)
-from middleware.audit import AuditMiddleware
-app.add_middleware(AuditMiddleware)
+# Security Headers Middleware
+from middleware.security_headers import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS Middleware — MUST be last (outermost) so preflight OPTIONS requests are handled
+# before other middlewares intercept them
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if settings.app_env == "development" else settings.cors_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Register API Routers
 app.include_router(auth_router)
