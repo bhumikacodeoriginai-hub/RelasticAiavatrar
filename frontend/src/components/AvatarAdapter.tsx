@@ -1,38 +1,43 @@
 /**
- * Avatar Adapter — Full-screen GLB Avatar Renderer
+ * AvatarAdapter — Intelligent Avatar Renderer Selection
  *
  * Strategy:
- * 1. Check if WebGL2 is available (required for Three.js)
- * 2. Select renderer:
- *    - WebGL available → Avatar3D (loads angelica.glb with 52 ARKit blendshapes,
- *      falls back to procedural head internally if GLB not found)
- *    - No WebGL → Avatar2D (SVG fallback for low-power devices)
+ * 1. Check WebGL2 availability (required for Three.js / Angelica GLB)
+ * 2. Check prefers-reduced-motion for accessibility
+ * 3. Render:
+ *    - WebGL2 available → Avatar3D (Angelica GLB with full 52 ARKit blendshapes)
+ *    - No WebGL2 → Avatar2DFallback (accessible SVG animation)
  *
- * The Avatar3D component handles full-screen rendering, mouse drag controls,
- * lip sync, eye blink, eye tracking, and realistic skin tone internally.
+ * The Angelica model is the PRIMARY and ONLY 3D avatar.
+ * If the GLB file is missing, Avatar3D internally falls back to a procedural head.
  */
 
-import { useState, useEffect, Suspense, lazy } from 'react'
+import { useState, useEffect, Suspense, lazy, useMemo } from 'react'
+import type { EmotionType, GestureType, AvatarActivityState, SpeechMark } from '../lib/avatar'
 
-// Lazy load renderers (heavy — don't load if not needed)
+// Lazy load renderers
 const Avatar3D = lazy(() => import('./Avatar3D'))
-const Avatar2D = lazy(() => import('./Avatar2DFallback'))
-
-interface SpeechMark {
-  time: number
-  type: string
-  value: string
-}
+const Avatar2DFallback = lazy(() => import('./Avatar2DFallback'))
 
 export interface AvatarProps {
   isSpeaking: boolean
   isListening: boolean
-  state: 'idle' | 'greeting' | 'speaking' | 'listening' | 'thinking'
+  state: AvatarActivityState
   speechMarks?: SpeechMark[]
   audioStartTime?: number
   name?: string
-  /** When true, avatar renders in full-screen immersive mode */
+  /** Emotion to express (from emotion analysis) */
+  emotion?: EmotionType
+  /** Emotion intensity 0-1 */
+  emotionIntensity?: number
+  /** Trigger a gesture */
+  gesture?: GestureType
+  /** Override reduced motion (otherwise detects from OS preference) */
+  reducedMotion?: boolean
+  /** Full-screen immersive mode */
   fullScreen?: boolean
+  /** Called when avatar is ready to render */
+  onReady?: () => void
 }
 
 // Detect WebGL2 support
@@ -51,6 +56,12 @@ function isWebGLAvailable(): boolean {
 export default function AvatarAdapter(props: AvatarProps) {
   const [renderer, setRenderer] = useState<'3d' | '2d' | 'loading'>('loading')
 
+  // Detect reduced motion preference
+  const prefersReducedMotion = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  }, [])
+
   useEffect(() => {
     if (isWebGLAvailable()) {
       setRenderer('3d')
@@ -59,12 +70,14 @@ export default function AvatarAdapter(props: AvatarProps) {
     }
   }, [])
 
+  const containerClass = props.fullScreen
+    ? 'w-full h-full absolute inset-0'
+    : 'w-full h-full min-h-[300px]'
+
   if (renderer === 'loading') {
     return (
       <div
-        className={`flex items-center justify-center bg-gradient-to-b from-[#1a1a2e] to-[#0f3460] ${
-          props.fullScreen ? 'w-full h-full absolute inset-0' : 'w-full h-full min-h-[300px]'
-        }`}
+        className={`flex items-center justify-center bg-gradient-to-b from-[#1a1a2e] to-[#0f3460] ${containerClass}`}
         role="img"
         aria-label="Avatar loading"
       >
@@ -80,49 +93,41 @@ export default function AvatarAdapter(props: AvatarProps) {
     <Suspense
       fallback={
         <div
-          className={`flex items-center justify-center bg-gradient-to-b from-[#1a1a2e] to-[#0f3460] ${
-            props.fullScreen ? 'w-full h-full absolute inset-0' : 'w-full h-full min-h-[300px]'
-          }`}
+          className={`flex items-center justify-center bg-gradient-to-b from-[#1a1a2e] to-[#0f3460] ${containerClass}`}
           role="img"
           aria-label="Avatar loading"
         >
           <div className="text-center">
             <div className="w-10 h-10 border-3 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-            <p className="text-white/60 text-sm">Loading 3D avatar...</p>
+            <p className="text-white/60 text-sm">Loading Angelica avatar...</p>
           </div>
         </div>
       }
     >
       {renderer === '3d' ? (
-        <Avatar3D {...props} />
+        <Avatar3D
+          isSpeaking={props.isSpeaking}
+          isListening={props.isListening}
+          state={props.state}
+          speechMarks={props.speechMarks}
+          audioStartTime={props.audioStartTime}
+          name={props.name}
+          emotion={props.emotion}
+          emotionIntensity={props.emotionIntensity}
+          gesture={props.gesture}
+          reducedMotion={props.reducedMotion ?? prefersReducedMotion}
+          onReady={props.onReady}
+        />
       ) : (
-        <Avatar2D {...props} />
+        <Avatar2DFallback
+          isSpeaking={props.isSpeaking}
+          isListening={props.isListening}
+          state={props.state}
+          speechMarks={props.speechMarks}
+          audioStartTime={props.audioStartTime}
+          name={props.name}
+        />
       )}
     </Suspense>
   )
-}
-
-/**
- * ARKit 52 Blendshape reference mapping from Polly visemes.
- * Used by Avatar3D internally when GLB model with morph targets is loaded.
- * Exported for reference/testing.
- */
-export const VISEME_TO_BLENDSHAPE: Record<string, Record<string, number>> = {
-  'sil': { jawOpen: 0.0, mouthClose: 1.0 },
-  'p':   { jawOpen: 0.05, mouthPucker: 0.6, mouthPressLeft: 0.4, mouthPressRight: 0.4 },
-  'f':   { jawOpen: 0.04, mouthFunnel: 0.4, mouthLowerDownLeft: 0.3, mouthLowerDownRight: 0.3 },
-  't':   { jawOpen: 0.15, mouthStretchLeft: 0.2, mouthStretchRight: 0.2 },
-  'k':   { jawOpen: 0.22, mouthShrugUpper: 0.3 },
-  'S':   { jawOpen: 0.12, mouthFunnel: 0.5, mouthShrugUpper: 0.3 },
-  's':   { jawOpen: 0.06, mouthSmileLeft: 0.15, mouthSmileRight: 0.15 },
-  'T':   { jawOpen: 0.1, tongueOut: 0.4 },
-  'r':   { jawOpen: 0.15, mouthFunnel: 0.35, mouthPucker: 0.2 },
-  'i':   { jawOpen: 0.1, mouthSmileLeft: 0.5, mouthSmileRight: 0.5 },
-  'u':   { jawOpen: 0.18, mouthPucker: 0.7, mouthFunnel: 0.3 },
-  'e':   { jawOpen: 0.22, mouthSmileLeft: 0.3, mouthSmileRight: 0.3 },
-  '@':   { jawOpen: 0.35, mouthFunnel: 0.2, mouthShrugLower: 0.2 },
-  'a':   { jawOpen: 0.55, mouthLowerDownLeft: 0.4, mouthLowerDownRight: 0.4 },
-  'o':   { jawOpen: 0.4, mouthPucker: 0.5, mouthFunnel: 0.4 },
-  'E':   { jawOpen: 0.28, mouthSmileLeft: 0.4, mouthSmileRight: 0.4 },
-  'O':   { jawOpen: 0.32, mouthPucker: 0.4, mouthFunnel: 0.3 },
 }
