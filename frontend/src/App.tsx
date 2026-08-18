@@ -5,6 +5,7 @@ import AccessibilityShell from './components/AccessibilityShell'
 import LoginPage from './pages/LoginPage'
 import ReceptionistPage from './pages/ReceptionistPage'
 import DashboardPage from './pages/DashboardPage'
+import AvatarFullScreenPage from './pages/AvatarFullScreenPage'
 import Navbar from './components/Navbar'
 
 function App() {
@@ -16,15 +17,15 @@ function App() {
             {/* Public route — Login */}
             <Route path="/login" element={<LoginPage />} />
 
+            {/* Public route — Full-screen avatar demo (no auth required) */}
+            <Route path="/avatar" element={<AvatarFullScreenPage />} />
+
             {/* Protected routes — require authentication */}
             <Route
               path="/"
               element={
                 <ProtectedRoute requiredRoles={['super_admin', 'it_admin', 'reception_manager', 'receptionist', 'kiosk_device']}>
-                  <>
-                    <Navbar />
-                    <ReceptionistPage />
-                  </>
+                  <ReceptionistPage />
                 </ProtectedRoute>
               }
             />
