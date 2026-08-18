@@ -42,6 +42,10 @@ class AuditMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        # Skip OPTIONS preflight requests (handled by CORS middleware)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         # Skip non-API and read-only requests
         path = request.url.path
         method = request.method

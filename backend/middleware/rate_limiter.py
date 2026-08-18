@@ -137,6 +137,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     EXEMPT_PATHS = {"/", "/health", "/docs", "/redoc", "/openapi.json"}
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        # Skip OPTIONS preflight requests (handled by CORS middleware)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         # Skip rate limiting for exempt paths and non-API routes
         path = request.url.path
         if path in self.EXEMPT_PATHS or not path.startswith("/api/"):
