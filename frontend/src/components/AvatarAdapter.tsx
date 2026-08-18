@@ -1,20 +1,20 @@
 /**
- * Avatar Adapter — Selects the appropriate avatar renderer.
+ * Avatar Adapter — Full-screen GLB Avatar Renderer
  *
  * Strategy:
  * 1. Check if WebGL2 is available (required for Three.js)
- * 2. Check if a GLB model URL is configured
- * 3. Select renderer:
- *    - GLB model available + WebGL → GLBAvatar (blendshape lip sync)
- *    - WebGL available, no GLB → ProceduralAvatar3D (current fallback)
+ * 2. Select renderer:
+ *    - WebGL available → Avatar3D (loads angelica.glb with 52 ARKit blendshapes,
+ *      falls back to procedural head internally if GLB not found)
  *    - No WebGL → Avatar2D (SVG fallback for low-power devices)
  *
- * Props are identical regardless of renderer.
+ * The Avatar3D component handles full-screen rendering, mouse drag controls,
+ * lip sync, eye blink, eye tracking, and realistic skin tone internally.
  */
 
 import { useState, useEffect, Suspense, lazy } from 'react'
 
-// Lazy load 3D components (heavy — don't load if not needed)
+// Lazy load renderers (heavy — don't load if not needed)
 const Avatar3D = lazy(() => import('./Avatar3D'))
 const Avatar2D = lazy(() => import('./Avatar2DFallback'))
 
@@ -31,6 +31,8 @@ export interface AvatarProps {
   speechMarks?: SpeechMark[]
   audioStartTime?: number
   name?: string
+  /** When true, avatar renders in full-screen immersive mode */
+  fullScreen?: boolean
 }
 
 // Detect WebGL2 support
@@ -46,9 +48,6 @@ function isWebGLAvailable(): boolean {
   }
 }
 
-// Check if a GLB model URL is configured
-const GLB_MODEL_URL = import.meta.env.VITE_AVATAR_MODEL_URL || ''
-
 export default function AvatarAdapter(props: AvatarProps) {
   const [renderer, setRenderer] = useState<'3d' | '2d' | 'loading'>('loading')
 
@@ -62,18 +61,38 @@ export default function AvatarAdapter(props: AvatarProps) {
 
   if (renderer === 'loading') {
     return (
-      <div className="w-full h-full min-h-[300px] flex items-center justify-center" role="img" aria-label="Avatar loading">
-        <div className="text-gray-400 text-sm">Loading avatar...</div>
+      <div
+        className={`flex items-center justify-center bg-gradient-to-b from-[#1a1a2e] to-[#0f3460] ${
+          props.fullScreen ? 'w-full h-full absolute inset-0' : 'w-full h-full min-h-[300px]'
+        }`}
+        role="img"
+        aria-label="Avatar loading"
+      >
+        <div className="text-center">
+          <div className="w-10 h-10 border-3 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-white/60 text-sm">Initializing avatar...</p>
+        </div>
       </div>
     )
   }
 
   return (
-    <Suspense fallback={
-      <div className="w-full h-full min-h-[300px] flex items-center justify-center" role="img" aria-label="Avatar loading">
-        <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-      </div>
-    }>
+    <Suspense
+      fallback={
+        <div
+          className={`flex items-center justify-center bg-gradient-to-b from-[#1a1a2e] to-[#0f3460] ${
+            props.fullScreen ? 'w-full h-full absolute inset-0' : 'w-full h-full min-h-[300px]'
+          }`}
+          role="img"
+          aria-label="Avatar loading"
+        >
+          <div className="text-center">
+            <div className="w-10 h-10 border-3 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+            <p className="text-white/60 text-sm">Loading 3D avatar...</p>
+          </div>
+        </div>
+      }
+    >
       {renderer === '3d' ? (
         <Avatar3D {...props} />
       ) : (
@@ -84,27 +103,26 @@ export default function AvatarAdapter(props: AvatarProps) {
 }
 
 /**
- * Blendshape mapping from Polly visemes to standard ARKit blendshapes.
- * Used when a GLB model with morph targets is loaded.
- *
- * Polly viseme → ARKit blendshape name → weight (0-1)
+ * ARKit 52 Blendshape reference mapping from Polly visemes.
+ * Used by Avatar3D internally when GLB model with morph targets is loaded.
+ * Exported for reference/testing.
  */
 export const VISEME_TO_BLENDSHAPE: Record<string, Record<string, number>> = {
-  'sil': { 'jawOpen': 0.0, 'mouthClose': 1.0 },
-  'p':   { 'jawOpen': 0.05, 'mouthPucker': 0.6, 'mouthClose': 0.3 },
-  'f':   { 'jawOpen': 0.05, 'mouthFunnel': 0.5, 'mouthLowerDownLeft': 0.3 },
-  't':   { 'jawOpen': 0.15, 'tongueOut': 0.1 },
-  'k':   { 'jawOpen': 0.2, 'mouthOpen': 0.3 },
-  'S':   { 'jawOpen': 0.1, 'mouthShrugUpper': 0.4 },
-  's':   { 'jawOpen': 0.05, 'mouthSmile': 0.2 },
-  'T':   { 'jawOpen': 0.1, 'tongueOut': 0.3 },
-  'r':   { 'jawOpen': 0.15, 'mouthFunnel': 0.3 },
-  'i':   { 'jawOpen': 0.1, 'mouthSmile': 0.5 },
-  'u':   { 'jawOpen': 0.15, 'mouthPucker': 0.7 },
-  'e':   { 'jawOpen': 0.2, 'mouthSmile': 0.3 },
-  '@':   { 'jawOpen': 0.3, 'mouthOpen': 0.4 },
-  'a':   { 'jawOpen': 0.5, 'mouthOpen': 0.6 },
-  'o':   { 'jawOpen': 0.35, 'mouthPucker': 0.5 },
-  'E':   { 'jawOpen': 0.25, 'mouthSmile': 0.4 },
-  'O':   { 'jawOpen': 0.3, 'mouthPucker': 0.4, 'mouthOpen': 0.3 },
+  'sil': { jawOpen: 0.0, mouthClose: 1.0 },
+  'p':   { jawOpen: 0.05, mouthPucker: 0.6, mouthPressLeft: 0.4, mouthPressRight: 0.4 },
+  'f':   { jawOpen: 0.04, mouthFunnel: 0.4, mouthLowerDownLeft: 0.3, mouthLowerDownRight: 0.3 },
+  't':   { jawOpen: 0.15, mouthStretchLeft: 0.2, mouthStretchRight: 0.2 },
+  'k':   { jawOpen: 0.22, mouthShrugUpper: 0.3 },
+  'S':   { jawOpen: 0.12, mouthFunnel: 0.5, mouthShrugUpper: 0.3 },
+  's':   { jawOpen: 0.06, mouthSmileLeft: 0.15, mouthSmileRight: 0.15 },
+  'T':   { jawOpen: 0.1, tongueOut: 0.4 },
+  'r':   { jawOpen: 0.15, mouthFunnel: 0.35, mouthPucker: 0.2 },
+  'i':   { jawOpen: 0.1, mouthSmileLeft: 0.5, mouthSmileRight: 0.5 },
+  'u':   { jawOpen: 0.18, mouthPucker: 0.7, mouthFunnel: 0.3 },
+  'e':   { jawOpen: 0.22, mouthSmileLeft: 0.3, mouthSmileRight: 0.3 },
+  '@':   { jawOpen: 0.35, mouthFunnel: 0.2, mouthShrugLower: 0.2 },
+  'a':   { jawOpen: 0.55, mouthLowerDownLeft: 0.4, mouthLowerDownRight: 0.4 },
+  'o':   { jawOpen: 0.4, mouthPucker: 0.5, mouthFunnel: 0.4 },
+  'E':   { jawOpen: 0.28, mouthSmileLeft: 0.4, mouthSmileRight: 0.4 },
+  'O':   { jawOpen: 0.32, mouthPucker: 0.4, mouthFunnel: 0.3 },
 }
